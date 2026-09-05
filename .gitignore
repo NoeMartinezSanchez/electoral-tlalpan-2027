@@ -43,3 +43,7 @@ logs/
 # Uploads
 uploads/
 temp/
+
+# Archivos locales (no subir a GitHub)
+notas.txt
+AGENTS.md
