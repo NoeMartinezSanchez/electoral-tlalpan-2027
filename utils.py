@@ -1,6 +1,17 @@
+import random
+from datetime import datetime
+
 import streamlit as st
+
 from modules.auth import validar_credenciales
 from modules.data import CONFIG
+from modules.scrapeless import (
+    ejecutar_plan,
+    estimar_costo,
+    obtener_api_key,
+    obtener_balance,
+)
+from modules.social_media_generator import generar_posts
 
 def inyectar_estilos_custom():
     """
@@ -236,3 +247,185 @@ def mostrar_boton_cerrar_sesion():
         if st.button("🔒 Cerrar sesión", use_container_width=True):
             st.session_state.autenticado = False
             st.rerun()
+
+# ---------------------------------------------------------------------------
+# Extracción real de datos con la Scraping API de Scrapeless
+# ---------------------------------------------------------------------------
+
+def _inicializar_config_extraccion():
+    """Inicializa las claves no-widget de session_state para la configuración de extracción."""
+    valores_por_defecto = {
+        'scrapeless_api_key': '',
+        'scrapeless_balance': None,
+        'posts_origen': 'sintetico',
+    }
+    for clave, valor in valores_por_defecto.items():
+        if clave not in st.session_state:
+            st.session_state[clave] = valor
+
+def _armar_plan() -> list:
+    """Construye el plan de extracción a partir de los widgets de configuración."""
+    return [
+        {
+            'red': 'TikTok',
+            'activo': bool(st.session_state.get('cfg_tt_activa')),
+            'consulta': st.session_state.get('cfg_tt_keyword', '').strip(),
+            'limite': int(st.session_state.get('cfg_tt_limite', 35)),
+        },
+        {
+            'red': 'Instagram',
+            'activo': bool(st.session_state.get('cfg_ig_activa')),
+            'consulta': st.session_state.get('cfg_ig_keyword', '').strip(),
+            'limite': int(st.session_state.get('cfg_ig_limite', 35)),
+        },
+    ]
+
+def _fallback_sintetico():
+    """Regenera datos sintéticos (modo demo) y marca el origen de los posts."""
+    st.session_state.posts_sociales = generar_posts(random.randint(500, 800))
+    st.session_state.posts_origen = 'sintetico'
+
+def _verificar_saldo():
+    """Consulta el saldo del usuario en Scrapeless y guarda el resultado."""
+    api_key = obtener_api_key()
+    balance = obtener_balance(api_key) if api_key else None
+    st.session_state.scrapeless_balance = balance
+    if balance is None:
+        st.error("⚠️ No se pudo consultar el saldo: revisa tu API Key de Scrapeless o tu conexión.")
+    else:
+        estado_plan = 'activo' if balance['plan'].get('status') else 'sin suscripción activa'
+        st.success(f"💳 Saldo disponible: {balance['creditos']:.4f} créditos "
+                   f"(+{balance['excesos']:.4f} exceso). Plan: {estado_plan}.")
+
+def _ejecutar_extraccion():
+    """Ejecuta el plan de extracción real o cae a datos sintéticos según el saldo."""
+    api_key = obtener_api_key()
+    balance = obtener_balance(api_key) if api_key else None
+    st.session_state.scrapeless_balance = balance
+    plan = _armar_plan()
+
+    if st.session_state.get('ambito_extraccion') != 'keyword':
+        st.warning("👤 El ámbito 'Perfil definido' estará disponible en una próxima fase.")
+    if not any(cfg['activo'] and cfg['consulta'] for cfg in plan):
+        st.warning("⚠️ Activa al menos una red e ingresa una palabra clave/hashtag.")
+        return
+    if not api_key or balance is None or balance['creditos'] <= 0:
+        st.warning("⚠️ Sin saldo disponible o API Key inválida. Se usarán DATOS SINTÉTICOS "
+                   "(modo verificación de saldo + fallback).")
+        _fallback_sintetico()
+        st.rerun()
+        return
+
+    redes_activas = ', '.join(cfg['red'] for cfg in plan if cfg['activo'] and cfg['consulta'])
+    with st.spinner(f"Descargando datos reales de {redes_activas} desde Scrapeless..."):
+        resultado = ejecutar_plan(plan, api_key=api_key)
+    if resultado['df'] is not None:
+        st.session_state.posts_sociales = resultado['df']
+        st.session_state.posts_origen = 'real'
+        st.session_state.fecha_extraccion = datetime.now()
+        st.toast(f"✅ {len(resultado['df'])} posts reales descargados", icon="✅")
+    else:
+        st.warning(f"⚠️ Fallo en la extracción: {resultado['error']}. Se usarán DATOS SINTÉTICOS.")
+        _fallback_sintetico()
+    st.rerun()
+
+def _restablecer_sintetico():
+    """Regenera datos sintéticos y vuelve al modo demo."""
+    _fallback_sintetico()
+    st.rerun()
+
+def _mostrar_config_real():
+    """Panel de configuración para el modo Real (Scrapeless)."""
+    col_sal, col_ver = st.columns([3, 1])
+    with col_sal:
+        balance = st.session_state.get('scrapeless_balance')
+        if balance is None:
+            st.markdown("💳 **Saldo:** no verificado")
+        else:
+            st.markdown(f"💳 **Saldo: {balance['creditos']:.4f}** créditos")
+    with col_ver:
+        if st.button("💳 Verificar saldo", use_container_width=True):
+            _verificar_saldo()
+
+    st.radio(
+        "Ámbito de extracción:",
+        options=['keyword', 'perfil'],
+        format_func=lambda o: "🔑 Palabra clave / Hashtag (activo)"
+                              if o == 'keyword' else "👤 Perfil definido (próxima fase)",
+        horizontal=True,
+        key='ambito_extraccion',
+    )
+    if st.session_state.get('ambito_extraccion') != 'keyword':
+        st.info("El ámbito 'Perfil definido' (descargar publicaciones de un usuario específico) "
+                "se implementará en una próxima fase.")
+
+    st.markdown("### 📝 Configuración por red social")
+    col_tt, col_ig = st.columns(2)
+    with col_tt:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        st.markdown("**🎵 TikTok**")
+        st.checkbox("Habilitar", key='cfg_tt_activa')
+        st.text_input("Palabra clave / hashtag", key='cfg_tt_keyword',
+                      placeholder="ej. #Tlalpan o 'candidata alcaldia'")
+        st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite')
+        st.markdown('</div>', unsafe_allow_html=True)
+    with col_ig:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        st.markdown("**📸 Instagram**")
+        st.checkbox("Habilitar", key='cfg_ig_activa')
+        st.text_input("Palabra clave / hashtag", key='cfg_ig_keyword',
+                      placeholder="ej. #Tlalpan o 'seguridad alcaldia'")
+        st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_ig_limite')
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    balance_actual = st.session_state.get('scrapeless_balance')
+    credito_actual = balance_actual['creditos'] if balance_actual else None
+    est = estimar_costo(_armar_plan(), credito_actual)
+    st.markdown(f"🔎 **Estimación:** {est['peticiones']} petición(es) ≈ "
+                f"**${est['costo_usd']:.2f} USD**")
+    if est['alcanza'] is False:
+        st.warning("⚠️ El costo estimado supera el saldo disponible. Ajusta las cantidades.")
+
+    col_ej, col_res = st.columns(2)
+    with col_ej:
+        if st.button("🚀 Ejecutar extracción", use_container_width=True):
+            _ejecutar_extraccion()
+    with col_res:
+        if st.button("🔄 Restablecer a sintéticos", use_container_width=True):
+            _restablecer_sintetico()
+
+    st.caption("Los actores de búsqueda se centralizan en `modules/scrapeless.py` "
+               "(dict `ACTORES`); confírmalos en el dashboard de Scrapeless + verifica "
+               "tu API Key para activar llamadas reales.")
+
+def mostrar_configuracion_extraccion():
+    """
+    Panel de configuración de datos de la Pestaña 2: modo demo (sintético) o
+    extracción real con la Scraping API de Scrapeless (búsqueda por palabra
+    clave/hashtag por red social).
+    """
+    _inicializar_config_extraccion()
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-top: 8px;'>"
+                "🚀 Extracción Real de Datos (Scrapeless)</h4>", unsafe_allow_html=True)
+    st.caption("Descarga datos reales de TikTok e Instagram por palabra clave/hashtag. "
+               "Si no hay saldo o falla la llamada, se vuelve a datos sintéticos automáticamente.")
+
+    st.radio(
+        "Modo de datos:",
+        options=['sintetico', 'real'],
+        format_func=lambda o: "📊 Sintético (demo)" if o == 'sintetico' else "🔴 Real (Scrapeless)",
+        horizontal=True,
+        key='modo_extraccion',
+    )
+    if st.session_state.get('modo_extraccion') == 'real':
+        st.text_input(
+            "🔑 API Key de Scrapeless",
+            type="password",
+            value="",
+            placeholder="Pega aquí tu API Key (o configúrala en .streamlit/secrets.toml)",
+            key='scrapeless_api_key',
+        )
+        _mostrar_config_real()
+    else:
+        st.info("Modo demo: los datos se generan sintéticamente. Cambia a 'Real (Scrapeless)' "
+                "para configurar la extracción con tu API Key.")

@@ -4,10 +4,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+import random
 from datetime import datetime, timedelta
 
 # Importar generador sintético
 from modules.social_media_generator import generar_posts, TEMAS_ELECTORALES
+from utils import mostrar_configuracion_extraccion
 
 @st.cache_data
 def generar_datos_iniciales(n=500):
@@ -263,11 +265,14 @@ def mostrar_dashboard_redes_sociales():
     """
     st.markdown("<h2 style='font-size: 22px; font-weight: 700; margin-top: 10px; margin-bottom: 2px;'>📊 Dashboard de Redes Sociales</h2>", unsafe_allow_html=True)
     st.caption("Monitoreo estadístico y semántico en canales digitales (Simulación de Scraping)")
-    
+
+    # 0. Panel de configuración de datos: modo demo (sintético) o real (Scrapeless)
+    mostrar_configuracion_extraccion()
+
     # 1. Inicializar posts en session_state si no existen (500 posts iniciales)
     if 'posts_sociales' not in st.session_state:
         st.session_state.posts_sociales = generar_datos_iniciales(600)
-        
+
     # 2. Controles superiores (Filtros de Red, Tema y Actualización de Scraping)
     col_control1, col_control2, col_control3 = st.columns([2, 2, 1])
     
@@ -285,13 +290,17 @@ def mostrar_dashboard_redes_sociales():
         )
     with col_control3:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Actualizar Datos", use_container_width=True, key="btn_actualizar_scraping"):
-            with st.spinner("Simulando scraping y ejecutando NLP..."):
-                # Generar entre 500 y 800 posts aleatorios nuevos
-                nuevos_datos = generar_posts(random.randint(500, 800))
-                st.session_state.posts_sociales = nuevos_datos
-                st.toast(f"¡Scraping completado! {len(nuevos_datos)} posts importados.", icon="✅")
-                st.rerun()
+        # En modo real el refresco de datos se hace desde el panel de extracción
+        if st.session_state.get('modo_extraccion', 'sintetico') != 'real':
+            if st.button("🔄 Actualizar Datos", use_container_width=True, key="btn_actualizar_scraping"):
+                with st.spinner("Simulando scraping y ejecutando NLP..."):
+                    # Generar entre 500 y 800 posts aleatorios nuevos
+                    nuevos_datos = generar_posts(random.randint(500, 800))
+                    st.session_state.posts_sociales = nuevos_datos
+                    st.toast(f"¡Scraping completado! {len(nuevos_datos)} posts importados.", icon="✅")
+                    st.rerun()
+        else:
+            st.caption("Origen: datos reales. Usa el panel de extracción para actualizar.")
 
     # 3. Controles secundarios: Rango de fechas y Exportación CSV
     df_actual = st.session_state.posts_sociales.copy()
@@ -374,4 +383,3 @@ def mostrar_dashboard_redes_sociales():
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
         mostrar_ultimos_posts(df_filtrado, n=10)
         st.markdown('</div>', unsafe_allow_html=True)
-import random

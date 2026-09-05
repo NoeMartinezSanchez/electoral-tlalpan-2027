@@ -92,6 +92,58 @@ pública.
 **Modo demo**: si no existe `.streamlit/secrets.toml`, la app usa por defecto
 `admin` / `tlalpan2027` (sin archivo de secrets) e imprime un aviso por consola.
 
+## 🚀 Extracción real de datos (Scrapeless)
+
+En la **Pestaña 2** puedes alternar entre **Modo demo (sintético)** y
+**🔴 Real (Scrapeless)**: descarga datos reales de **TikTok e Instagram** por
+**palabra clave / hashtag** tensando a la analítica existente (KPIs, series,
+wordcloud, sentimiento, CSV).
+
+### Dónde pegar tu API Key de Scrapeless
+
+Puedes configurarla en dos lugares (tiene prioridad el archivo):
+
+1. **`.streamlit/secrets.toml`** (recomendado, no se sube a GitHub):
+
+```toml
+[SCRAPELESS]
+API_KEY = "tu_api_key_real"
+```
+
+2. En la app: Pestaña 2 → `🔴 Real (Scrapeless)` → campo `🔑 API Key de
+   Scrapeless` (se persiste solo durante la sesión).
+
+### Configuración por red social
+
+El panel permite, para TikTok y por separado para Instagram:
+habilitar la red, escribir la **palabra clave o hashtag** y elegir el
+**número de publicaciones** (5–200). También muestra la **estimación de
+peticiones y costo USD** contra tu **saldo** (consultado con `GET /api/v1/me`).
+
+### Costo y activación
+
+- Scrapeless cobra **solo por peticiones exitosas** (HTTP 200 con JSON válido);
+  las cacheadas o fallidas no cuestan.
+- Las cuentas nuevas incluyen **~$5 de crédito gratis** (sin tarjeta).
+- Comportamiento actual: **modo verificación de saldo + fallback**. Si no hay
+  key, saldo o la llamada falla, la app avisa y vuelve a **datos sintéticos**
+  automáticamente.
+- El scraper busca por palabra clave. El ámbito **"Perfil definido"** (descargar
+  publicaciones de un usuario específico) está deshabilitado: se implementa en
+  una próxima fase.
+
+### Actores de la API (importante)
+
+Los nombres de actor están centralizados en `modules/scrapeless.py` (dict
+`ACTORES`). Confirma el nombre exacto de cada actor y sus parámetros en tu
+dashboard de Scrapeless (**Scrape API → seleccionar red → generar código**) y
+ajústalos si difieren:
+
+| Red | Actor de búsqueda (placeholder a confirmar) |
+|---|---|
+| TikTok | `scraper.tiktok.search` |
+| Instagram | `scraper.instagram.hashtag.search` |
+
 ## 📁 Estructura del repositorio
 
 ```
@@ -103,6 +155,7 @@ electoral/
 │   ├── data.py                     # Secciones, CONFIG, simulación de visitas
 │   ├── nlp.py                      # Clasificación de quejas (zero-shot + reglas)
 │   ├── ocr.py                      # Procesamiento de actas (OCR + fallback)
+│   ├── scrapeless.py               # Cliente de la Scraping API (saldo, búsqueda, normalización)
 │   ├── social_media.py             # Dashboard de redes sociales (Pestaña 2)
 │   └── social_media_generator.py   # Generador de posts sintéticos
 ├── project-docs/                   # Especificación, contratos de datos y reglas
@@ -119,5 +172,6 @@ electoral/
 ## ⚖️ Aviso
 
 Proyecto **demostrativo** para fines de prototipo y capacitación. Los datos,
-resultados y visualizaciones son simulados y no representan información real de
-nómina, preferencias electorales ni resultados oficiales.
+resultados y visualizaciones son simulados **o extraídos de fuentes públicas vía
+Scrapeless** y no representan información real de nómina, preferencias
+electorales ni resultados oficiales.
