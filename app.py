@@ -8,7 +8,12 @@ from streamlit_folium import folium_static
 # Importaciones locales
 from modules.data import CONFIG, generar_datos_iniciales, simular_visita
 from modules.nlp import clasificar_queja
-from utils import inyectar_estilos_custom, mostrar_alertas
+from utils import (
+    inyectar_estilos_custom,
+    mostrar_alertas,
+    mostrar_boton_cerrar_sesion,
+    verificar_autenticacion
+)
 
 # 1. Configuración de página optimizada para móvil (mobile-first)
 st.set_page_config(
@@ -25,6 +30,8 @@ if 'visitas' not in st.session_state:
     st.session_state.visitas = []
 if 'alertas' not in st.session_state:
     st.session_state.alertas = []
+if 'autenticado' not in st.session_state:
+    st.session_state.autenticado = False
 
 def generar_alertas(df):
     """
@@ -269,6 +276,13 @@ def mostrar_dashboard_electoral():
 def main():
     # Inyectar estilos CSS comunes para diseño mobile-first y premium
     inyectar_estilos_custom()
+    
+    # Gate de autenticación: si no hay sesión activa, solo se muestra el login
+    if not verificar_autenticacion():
+        st.stop()
+    
+    # Botón de cierre de sesión en el encabezado de la app
+    mostrar_boton_cerrar_sesion()
     
     # Crear la navegación por Pestañas (independientes)
     tab1, tab2 = st.tabs(["🗳️ Inteligencia Electoral", "📊 Redes Sociales"])

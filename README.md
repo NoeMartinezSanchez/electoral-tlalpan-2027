@@ -71,6 +71,27 @@ navegador del teléfono.
 ### ☁️ Versión desplegada
 Disponible en: <https://electoral-tlalpan-2027.streamlit.app/>
 
+## 🔐 Autenticación
+
+La app tiene un login simple (usuario + contraseña) que protege el acceso a las
+dos pestañas. Las credenciales se leen de `.streamlit/secrets.toml`:
+
+```toml
+[AUTH]
+USUARIO = "admin"
+CONTRASENA = "tlalpan2027"
+```
+
+**Cambiar credenciales en local**: edita `.streamlit/secrets.toml`
+(este archivo está en `.gitignore`, no se sube a GitHub).
+
+**Cambiar credenciales en la nube** (Streamlit Cloud): entra a tu app →
+`Settings` → `Secrets` y pega el mismo bloque `[AUTH]` para proteger la URL
+pública.
+
+**Modo demo**: si no existe `.streamlit/secrets.toml`, la app usa por defecto
+`admin` / `tlalpan2027` (sin archivo de secrets) e imprime un aviso por consola.
+
 ## 📁 Estructura del repositorio
 
 ```
@@ -78,6 +99,7 @@ electoral/
 ├── app.py                          # Punto de entrada (st.tabs)
 ├── utils.py                        # CSS mobile-first y centro de alertas
 ├── modules/
+│   ├── auth.py                      # Autenticación (credenciales y validación)
 │   ├── data.py                     # Secciones, CONFIG, simulación de visitas
 │   ├── nlp.py                      # Clasificación de quejas (zero-shot + reglas)
 │   ├── ocr.py                      # Procesamiento de actas (OCR + fallback)

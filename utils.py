@@ -1,4 +1,5 @@
 import streamlit as st
+from modules.auth import validar_credenciales
 from modules.data import CONFIG
 
 def inyectar_estilos_custom():
@@ -188,3 +189,50 @@ def mostrar_alertas(alertas):
                         <strong>⚠️ {tipo} (Sección {seccion}):</strong><br>{mensaje}
                     </div>
                 """, unsafe_allow_html=True)
+
+def mostrar_login():
+    """
+    Renderiza el formulario de inicio de sesión (mobile-first) usando las
+    clases CSS existentes. Valida las credenciales y actualiza
+    st.session_state.autenticado en caso de éxito.
+    """
+    st.markdown('<div class="main-title">🗳️ Tlalpan Electoral 2027</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Acceso restringido · Ingresa tus credenciales</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="info-card">', unsafe_allow_html=True)
+    usuario = st.text_input("👤 Usuario", placeholder="Escribe tu usuario")
+    contrasena = st.text_input("🔑 Contraseña", type="password", placeholder="Escribe tu contraseña")
+    if st.button("🔐 Iniciar Sesión", use_container_width=True):
+        if validar_credenciales(usuario, contrasena):
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("❌ Credenciales incorrectas. Intenta nuevamente.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def verificar_autenticacion() -> bool:
+    """
+    Verifica si el usuario tiene una sesión activa.
+    Si no está autenticado, renderiza el formulario de login y retorna False
+    para que el resto de la app no se renderice.
+
+    Retorna:
+        True si la sesión está activa, False si se muestra el login.
+    """
+    if 'autenticado' not in st.session_state:
+        st.session_state.autenticado = False
+    if not st.session_state.autenticado:
+        mostrar_login()
+        return False
+    return True
+
+def mostrar_boton_cerrar_sesion():
+    """
+    Muestra el botón para cerrar la sesión activa en el encabezado de la app.
+    Al pulsarlo resetea st.session_state.autenticado y recarga la página.
+    """
+    col_boton, col_vacio = st.columns([1, 3])
+    with col_boton:
+        if st.button("🔒 Cerrar sesión", use_container_width=True):
+            st.session_state.autenticado = False
+            st.rerun()
