@@ -2,8 +2,10 @@
 
 Demo técnico mobile-first construido con **Streamlit** que simula un sistema de
 inteligencia electoral para el proceso electoral intermedio 2027 en Tlalpan.
-Toda la data es **sintética**: no consume APIs externas, no requiere
-autenticación y funciona 100% local.
+Incluye **login simple**, datos **sintéticos por defecto** (sin APIs internas ni
+preferencias reales) y, en la Pestaña 2, la opción de **extracción de datos
+reales** de TikTok e Instagram vía la **Scraping API de Scrapeless** cuando hay
+saldo disponible.
 
 ## 🧱 Pestañas
 
@@ -19,12 +21,12 @@ autenticación y funciona 100% local.
   determinista cuando Tesseract no está instalado.
 
 ### 2. 📊 Redes Sociales
-- Dashboard de analítica sobre posts simulados (TikTok, Facebook, X, Instagram).
+- Dashboard de analítica sobre posts (TikTok, Facebook, X, Instagram).
 - KPIs de engagement, series temporales, nube de palabras por sentimiento,
   top temas, distribución por red y sentimiento en el tiempo.
 - Filtros por red social, tema electoral y rango de fechas.
-- Botón de actualización que simula *scraping* (genera 500–800 posts nuevos) y
-  **exportación a CSV**.
+- **Dos modos de datos**: demo (genera 500–800 posts sintéticos) y **real**
+  (descarga desde Scrapeless por palabra clave/hashtag). Exportación a **CSV**.
 
 ## 🛠️ Stack técnico
 
@@ -96,8 +98,8 @@ pública.
 
 En la **Pestaña 2** puedes alternar entre **Modo demo (sintético)** y
 **🔴 Real (Scrapeless)**: descarga datos reales de **TikTok e Instagram** por
-**palabra clave / hashtag** tensando a la analítica existente (KPIs, series,
-wordcloud, sentimiento, CSV).
+**palabra clave / hashtag**, integrándolos a la analítica existente (KPIs,
+series, wordcloud, sentimiento, CSV).
 
 ### Dónde pegar tu API Key de Scrapeless
 
