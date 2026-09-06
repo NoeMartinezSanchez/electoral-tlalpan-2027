@@ -80,8 +80,8 @@ dos pestañas. Las credenciales se leen de `.streamlit/secrets.toml`:
 
 ```toml
 [AUTH]
-USUARIO = "admin"
-CONTRASENA = "tlalpan2027"
+USUARIO = "administrador"
+CONTRASENA = "1234567890"
 ```
 
 **Cambiar credenciales en local**: edita `.streamlit/secrets.toml`
