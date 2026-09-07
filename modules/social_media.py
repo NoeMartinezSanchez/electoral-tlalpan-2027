@@ -4,19 +4,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
-import random
 from datetime import datetime, timedelta
 
-# Importar generador sintético
-from modules.social_media_generator import generar_posts, TEMAS_ELECTORALES
+from modules.social_media_generator import TEMAS_ELECTORALES
 from utils import mostrar_configuracion_extraccion
 
-@st.cache_data
-def generar_datos_iniciales(n=500):
-    """
-    Genera datos sintéticos de redes sociales (cacheado).
-    """
-    return generar_posts(n)
+COLUMNAS_POSTS = [
+    'id_post', 'red_social', 'usuario', 'fecha', 'texto', 'hashtags', 'likes',
+    'comentarios', 'compartidos', 'sentimiento', 'tema_electoral',
+    'engagement', 'engagement_rate'
+]
+
+def df_posts_vacio() -> pd.DataFrame:
+    """DataFrame vacío con el esquema estándar de posts (para el primer render)."""
+    return pd.DataFrame(columns=COLUMNAS_POSTS)
 
 def color_por_sentimiento(word, font_size, position, orientation, random_state=None, **kwargs):
     """
@@ -264,16 +265,16 @@ def mostrar_dashboard_redes_sociales():
     Define los controles de filtrado y actualiza la visualización de analíticas.
     """
     st.markdown("<h2 style='font-size: 22px; font-weight: 700; margin-top: 10px; margin-bottom: 2px;'>📊 Dashboard de Redes Sociales</h2>", unsafe_allow_html=True)
-    st.caption("Monitoreo estadístico y semántico en canales digitales (Simulación de Scraping)")
+    st.caption("Monitoreo estadístico y semántico de datos reales extraídos de TikTok (Scrapeless)")
 
-    # 0. Panel de configuración de datos: modo demo (sintético) o real (Scrapeless)
+    # 0. Panel de configuración de extracción real (Scrapeless)
     mostrar_configuracion_extraccion()
 
-    # 1. Inicializar posts en session_state si no existen (500 posts iniciales)
+    # 1. Inicializar posts en session_state (vacío hasta la primera extracción)
     if 'posts_sociales' not in st.session_state:
-        st.session_state.posts_sociales = generar_datos_iniciales(600)
+        st.session_state.posts_sociales = df_posts_vacio()
 
-    # 2. Controles superiores (Filtros de Red, Tema y Actualización de Scraping)
+    # 2. Controles superiores (Filtros de Red y Tema)
     col_control1, col_control2, col_control3 = st.columns([2, 2, 1])
     
     with col_control1:
@@ -290,20 +291,14 @@ def mostrar_dashboard_redes_sociales():
         )
     with col_control3:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        # En modo real el refresco de datos se hace desde el panel de extracción
-        if st.session_state.get('modo_extraccion', 'sintetico') != 'real':
-            if st.button("🔄 Actualizar Datos", use_container_width=True, key="btn_actualizar_scraping"):
-                with st.spinner("Simulando scraping y ejecutando NLP..."):
-                    # Generar entre 500 y 800 posts aleatorios nuevos
-                    nuevos_datos = generar_posts(random.randint(500, 800))
-                    st.session_state.posts_sociales = nuevos_datos
-                    st.toast(f"¡Scraping completado! {len(nuevos_datos)} posts importados.", icon="✅")
-                    st.rerun()
-        else:
-            st.caption("Origen: datos reales. Usa el panel de extracción para actualizar.")
+        st.caption("Datos reales")
 
     # 3. Controles secundarios: Rango de fechas y Exportación CSV
     df_actual = st.session_state.posts_sociales.copy()
+    if df_actual.empty:
+        st.info("📭 Aún no hay datos. Ejecuta una extracción real con un @usuario de TikTok "
+                "en el panel de arriba para ver la analítica.")
+        return
     min_date = df_actual['fecha'].min().date()
     max_date = df_actual['fecha'].max().date()
     

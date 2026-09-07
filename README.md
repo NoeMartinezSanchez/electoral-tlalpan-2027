@@ -2,10 +2,9 @@
 
 Demo técnico mobile-first construido con **Streamlit** que simula un sistema de
 inteligencia electoral para el proceso electoral intermedio 2027 en Tlalpan.
-Incluye **login simple**, datos **sintéticos por defecto** (sin APIs internas ni
-preferencias reales) y, en la Pestaña 2, la opción de **extracción de datos
-reales** de TikTok e Instagram vía la **Scraping API de Scrapeless** cuando hay
-saldo disponible.
+Incluye **login simple** y, en la Pestaña 2, **extracción de datos reales** de
+**TikTok** vía la **Scraping API de Scrapeless** (perfil por @usuario), con
+analítica y exportación de resultados sin generación sintética.
 
 ## 🧱 Pestañas
 
@@ -25,9 +24,9 @@ saldo disponible.
 - KPIs de engagement, series temporales, nube de palabras por sentimiento,
   top temas, distribución por red y sentimiento en el tiempo.
 - Filtros por red social, tema electoral y rango de fechas.
-- **Dos modos de datos**: demo (genera 500–800 posts sintéticos) y **real**
-  (descarga desde Scrapeless las publicaciones de un **perfil de TikTok**).
-  Exportación a **CSV**.
+- **Solo datos reales**: el dashboard se alimenta de la extracción de un
+  **perfil de TikTok** vía Scrapeless (sin generación sintética). Exportación
+  a **CSV** y estructura de resultado en **JSON/CSV**.
 
 ## 🛠️ Stack técnico
 
@@ -129,14 +128,24 @@ El panel permite elegir el **@usuario de TikTok** a monitorear y el **número de
 publicaciones** (5–200) a descargar. También muestra la **estimación de
 peticiones y costo USD** contra tu **saldo** (consultado con `GET /api/v1/me`).
 
+### Resultados y estructura
+
+Cada extracción exitosa se guarda en `datos_extraidos/` (gitignored):
+
+- `posts_<usuario>_<fecha>.csv` — tabla normalizada que alimenta el dashboard.
+- `raw_<usuario>_<fecha>.json` — items crudos devueltos por Scrapeless, para
+  decidir qué analítica extraer de la estructura real.
+
+En la app, el expander "🔎 Ver estructura del resultado" muestra un adelanto y
+botones **📥 Descargar CSV / JSON** de la última extracción.
+
 ### Costo y activación
 
 - Scrapeless cobra **solo por peticiones exitosas** (HTTP 200 con JSON válido);
   las cacheadas o fallidas no cuestan.
 - Las cuentas nuevas incluyen **~$5 de crédito gratis** (sin tarjeta).
-- Comportamiento actual: **modo verificación de saldo + fallback**. Si no hay
-  key, saldo o la llamada falla, la app avisa (con el error real de Scrapeless)
-  y vuelve a **datos sintéticos** automáticamente.
+- Sin API Key/saldo o si la llamada falla, la app avisa con el error real de
+  Scrapeless (no genera datos falsos). La API Key se lee solo de los Secrets.
 
 ### Actores de la API
 

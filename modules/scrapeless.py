@@ -91,9 +91,8 @@ def _obtener(item, *llaves, default=None):
 
 def obtener_api_key() -> str:
     """
-    Obtiene la API Key de Scrapeless: primero desde .streamlit/secrets.toml
-    (sección [SCRAPELESS] -> API_KEY) y después desde el campo de la UI
-    (st.session_state.scrapeless_api_key).
+    Obtiene la API Key de Scrapeless desde .streamlit/secrets.toml
+    (sección [SCRAPELESS] -> API_KEY) o desde los Secrets del Cloud.
 
     Retorna:
         str con la key configurada, o '' si no hay ninguna.
@@ -104,7 +103,7 @@ def obtener_api_key() -> str:
             return key_secrets
     except Exception:
         pass
-    return st.session_state.get('scrapeless_api_key', '').strip()
+    return ''
 
 
 def obtener_balance(api_key: str) -> Optional[dict]:
@@ -270,6 +269,7 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     """
     api_key = api_key or obtener_api_key()
     frames = []
+    items_crudos = []
     errores = []
     for config in plan:
         if not (config.get('activo') and config.get('consulta')):
@@ -292,16 +292,18 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
             errores.append(f'{red}: {error}')
             continue
         if items:
+            items_crudos.extend(items)
             frames.append(normalizar_posts(red, items))
     if not frames:
         mensaje = '; '.join(errores) if errores else \
             'El plan no produjo datos (revisa el @usuario y las redes activas).'
         print(f'SCRAPELESS: plan sin resultados -> {mensaje}')
-        return {'df': None, 'posts_obtenidos': 0, 'errores': errores, 'error': mensaje}
+        return {'df': None, 'posts_obtenidos': 0, 'items': [], 'errores': errores, 'error': mensaje}
     df = pd.concat(frames, ignore_index=True)
     if errores:
         print(f'SCRAPELESS: plan con errores parciales -> {errores}')
-    return {'df': df, 'posts_obtenidos': len(df), 'errores': errores, 'error': None}
+    return {'df': df, 'posts_obtenidos': len(df), 'items': items_crudos,
+            'errores': errores, 'error': None}
 
 
 # --- Estimación de costo -----------------------------------------------------

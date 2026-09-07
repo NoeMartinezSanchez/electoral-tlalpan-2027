@@ -43,6 +43,7 @@ logs/
 # Uploads
 uploads/
 temp/
+datos_extraidos/
 
 # Archivos locales (no subir a GitHub)
 notas.txt

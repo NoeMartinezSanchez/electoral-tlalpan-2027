@@ -1,4 +1,5 @@
-import random
+import json
+import os
 from datetime import datetime
 
 import streamlit as st
@@ -11,7 +12,6 @@ from modules.scrapeless import (
     obtener_api_key,
     obtener_balance,
 )
-from modules.social_media_generator import generar_posts
 
 def inyectar_estilos_custom():
     """
@@ -255,10 +255,10 @@ def mostrar_boton_cerrar_sesion():
 def _inicializar_config_extraccion():
     """Inicializa las claves no-widget de session_state para la configuración de extracción."""
     valores_por_defecto = {
-        'scrapeless_api_key': '',
         'scrapeless_balance': None,
-        'posts_origen': 'sintetico',
+        'posts_origen': 'real',
         'estado_extraccion': None,
+        'ultima_extraccion': None,
     }
     for clave, valor in valores_por_defecto.items():
         if clave not in st.session_state:
@@ -284,10 +284,39 @@ def _armar_plan() -> list:
         },
     ]
 
-def _fallback_sintetico():
-    """Regenera datos sintéticos (modo demo) y marca el origen de los posts."""
-    st.session_state.posts_sociales = generar_posts(random.randint(500, 800))
-    st.session_state.posts_origen = 'sintetico'
+def _guardar_resultados(df, items, usuario):
+    """
+    Guarda los resultados de una extracción real en disco:
+    - `datos_extraidos/posts_<usuario>_<ts>.csv`   -> DataFrame normalizado.
+    - `datos_extraidos/raw_<usuario>_<ts>.json`    -> items crudos de Scrapeless.
+
+    Retorna:
+        dict con rutas y bytes para descarga ('csv_path', 'json_path', 'csv_bytes', 'json_bytes').
+    """
+    carpeta = 'datos_extraidos'
+    os.makedirs(carpeta, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    usuario_limpio = usuario.replace(' ', '_')
+    csv_path = os.path.join(carpeta, f'posts_{usuario_limpio}_{ts}.csv')
+    json_path = os.path.join(carpeta, f'raw_{usuario_limpio}_{ts}.json')
+    df.to_csv(csv_path, index=False)
+    contenedor = {
+        'red_social': 'TikTok',
+        'ambito': 'perfil',
+        'usuario': usuario_limpio,
+        'cantidad_items': len(items),
+        'generado': datetime.now().isoformat(),
+        'items': items,
+    }
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(contenedor, f, ensure_ascii=False, indent=2)
+    print(f'SCRAPELESS: resultados guardados en {csv_path} y {json_path}')
+    return {
+        'csv_path': csv_path,
+        'json_path': json_path,
+        'csv_bytes': df.to_csv(index=False).encode('utf-8'),
+        'json_bytes': json.dumps(contenedor, ensure_ascii=False, indent=2).encode('utf-8'),
+    }
 
 def _verificar_saldo():
     """Consulta el saldo del usuario en Scrapeless y guarda el resultado."""
@@ -302,7 +331,7 @@ def _verificar_saldo():
                    f"(+{balance['excesos']:.4f} exceso). Plan: {estado_plan}.")
 
 def _ejecutar_extraccion():
-    """Ejecuta el plan de extracción real o cae a datos sintéticos según el saldo."""
+    """Ejecuta una extracción real de un perfil de TikTok y guarda los resultados."""
     api_key = obtener_api_key()
     balance = obtener_balance(api_key) if api_key else None
     st.session_state.scrapeless_balance = balance
@@ -311,7 +340,7 @@ def _ejecutar_extraccion():
     if st.session_state.get('ambito_extraccion') == 'keyword':
         st.session_state['estado_extraccion'] = ('aviso',
             "🔑 La búsqueda por palabra clave/hashtag ya no está soportada por Scrapeless. "
-            "Usa el ámbito 'Perfil definido' con un @usuario de TikTok (o el Modo demo).")
+            "Usa el ámbito 'Perfil definido' con un @usuario de TikTok.")
         return
     if not any(cfg['activo'] and cfg['consulta'] for cfg in plan):
         st.session_state['estado_extraccion'] = ('aviso',
@@ -319,32 +348,34 @@ def _ejecutar_extraccion():
         return
     if not api_key or balance is None or balance['creditos'] <= 0:
         st.session_state['estado_extraccion'] = ('aviso',
-            "⚠️ Sin saldo disponible o API Key inválida. Se usaron DATOS SINTÉTICOS "
-            "(modo verificación de saldo + fallback).")
-        _fallback_sintetico()
+            "⚠️ Sin API Key configurada o sin saldo disponible. Revisa los Secrets "
+            "([SCRAPELESS] API_KEY) y el saldo en Scrapeless.")
         st.rerun()
         return
 
-    redes_activas = ', '.join(cfg['consulta'] for cfg in plan if cfg['activo'] and cfg['consulta'])
-    with st.spinner(f"Descargando publicaciones reales de {redes_activas} desde Scrapeless..."):
+    usuarios = ', '.join(cfg['consulta'].lstrip('@') for cfg in plan if cfg['activo'] and cfg['consulta'])
+    with st.spinner(f"Descargando publicaciones reales de @{usuarios} desde Scrapeless..."):
         resultado = ejecutar_plan(plan, api_key=api_key)
     if resultado['df'] is not None:
         st.session_state.posts_sociales = resultado['df']
         st.session_state.posts_origen = 'real'
         st.session_state.fecha_extraccion = datetime.now()
+        guardado = _guardar_resultados(
+            resultado['df'], resultado.get('items', []), usuarios)
+        st.session_state.ultima_extraccion = {
+            'usuario': usuarios,
+            'n_items': len(resultado['df']),
+            'csv_bytes': guardado['csv_bytes'],
+            'json_bytes': guardado['json_bytes'],
+            'csv_path': guardado['csv_path'],
+            'json_path': guardado['json_path'],
+        }
         st.session_state['estado_extraccion'] = (
-            'ok', f"✅ {len(resultado['df'])} posts reales descargados de @{redes_activas}.")
+            'ok', f"✅ {len(resultado['df'])} posts reales descargados de {usuarios}.")
         st.toast(f"✅ {len(resultado['df'])} posts reales descargados", icon="✅")
     else:
         st.session_state['estado_extraccion'] = (
-            'error', f"Fallo en la extracción: {resultado['error']}. Se usaron DATOS SINTÉTICOS.")
-        _fallback_sintetico()
-    st.rerun()
-
-def _restablecer_sintetico():
-    """Regenera datos sintéticos y vuelve al modo demo."""
-    _fallback_sintetico()
-    st.session_state['estado_extraccion'] = ('aviso', 'Modo demo: datos sintéticos regenerados.')
+            'error', f"Fallo en la extracción: {resultado['error']}")
     st.rerun()
 
 def _render_estado_extraccion():
@@ -359,6 +390,31 @@ def _render_estado_extraccion():
         st.error(texto)
     else:
         st.warning(texto)
+
+def _render_resultado_extraccion():
+    """
+    Muestra la estructura de la última extracción (columnas y primer item crudo)
+    con botones para descargar JSON y CSV.
+    """
+    ultima = st.session_state.get('ultima_extraccion')
+    if not ultima:
+        return
+    with st.expander(f"🔎 Ver estructura del resultado de @{ultima['usuario']} "
+                     f"({ultima['n_items']} posts)"):
+        st.markdown("**Tabla normalizada (dashboard):**")
+        st.write(st.session_state.posts_sociales.head(5))
+        st.markdown(f"Archivos guardados:\n- `{ultima['csv_path']}`\n- `{ultima['json_path']}`")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.download_button("📥 Descargar CSV", data=ultima['csv_bytes'],
+                               file_name=f"posts_{ultima['usuario'].replace(' ', '_')}.csv",
+                               mime='text/csv', use_container_width=True,
+                               key="btn_descargar_csv_extraccion")
+        with col_d2:
+            st.download_button("📥 Descargar JSON (crudo)", data=ultima['json_bytes'],
+                               file_name=f"raw_{ultima['usuario'].replace(' ', '_')}.json",
+                               mime='application/json', use_container_width=True,
+                               key="btn_descargar_json_extraccion")
 
 def _mostrar_config_real():
     """Panel de configuración para el modo Real (Scrapeless)."""
@@ -417,13 +473,10 @@ def _mostrar_config_real():
     if est['alcanza'] is False:
         st.warning("⚠️ El costo estimado supera el saldo disponible. Ajusta las cantidades.")
 
-    col_ej, col_res = st.columns(2)
-    with col_ej:
-        if st.button("🚀 Ejecutar extracción", use_container_width=True):
-            _ejecutar_extraccion()
-    with col_res:
-        if st.button("🔄 Restablecer a sintéticos", use_container_width=True):
-            _restablecer_sintetico()
+    if st.button("🚀 Ejecutar extracción", use_container_width=True):
+        _ejecutar_extraccion()
+
+    _render_resultado_extraccion()
 
     st.caption("Extracción real soportada: perfil de TikTok (`scraper.tiktok.user.detail` + "
                "`scraper.tiktok.user.work`). La búsqueda por palabra clave de TikTok y el "
@@ -431,32 +484,12 @@ def _mostrar_config_real():
 
 def mostrar_configuracion_extraccion():
     """
-    Panel de configuración de datos de la Pestaña 2: modo demo (sintético) o
-    extracción real con la Scraping API de Scrapeless (perfil de TikTok, por
-    usuario, con engagement real).
+    Panel de extracción real de la Pestaña 2 con la Scraping API de Scrapeless
+    (perfil de TikTok, por @usuario, con engagement real). Solo hay datos reales.
     """
     _inicializar_config_extraccion()
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-top: 8px;'>"
                 "🚀 Extracción Real de Datos (Scrapeless)</h4>", unsafe_allow_html=True)
-    st.caption("Descarga datos reales de TikTok e Instagram por palabra clave/hashtag. "
-               "Si no hay saldo o falla la llamada, se vuelve a datos sintéticos automáticamente.")
-
-    st.radio(
-        "Modo de datos:",
-        options=['sintetico', 'real'],
-        format_func=lambda o: "📊 Sintético (demo)" if o == 'sintetico' else "🔴 Real (Scrapeless)",
-        horizontal=True,
-        key='modo_extraccion',
-    )
-    if st.session_state.get('modo_extraccion') == 'real':
-        st.text_input(
-            "🔑 API Key de Scrapeless",
-            type="password",
-            value="",
-            placeholder="Pega aquí tu API Key (o configúrala en .streamlit/secrets.toml)",
-            key='scrapeless_api_key',
-        )
-        _mostrar_config_real()
-    else:
-        st.info("Modo demo: los datos se generan sintéticamente. Cambia a 'Real (Scrapeless)' "
-                "para configurar la extracción con tu API Key.")
+    st.caption("Descarga las publicaciones recientes de un perfil público de TikTok (@usuario) "
+               "con su engagement. La API Key se lee de los Secrets (`.streamlit/secrets.toml`).")
+    _mostrar_config_real()
