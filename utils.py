@@ -299,7 +299,8 @@ def _guardar_resultados(df, items, usuario):
     usuario_limpio = usuario.replace(' ', '_')
     csv_path = os.path.join(carpeta, f'posts_{usuario_limpio}_{ts}.csv')
     json_path = os.path.join(carpeta, f'raw_{usuario_limpio}_{ts}.json')
-    df.to_csv(csv_path, index=False)
+    # utf-8-sig (BOM) para que Excel abra los acentos correctamente
+    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
     contenedor = {
         'red_social': 'TikTok',
         'ambito': 'perfil',
@@ -314,7 +315,7 @@ def _guardar_resultados(df, items, usuario):
     return {
         'csv_path': csv_path,
         'json_path': json_path,
-        'csv_bytes': df.to_csv(index=False).encode('utf-8'),
+        'csv_bytes': df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8'),
         'json_bytes': json.dumps(contenedor, ensure_ascii=False, indent=2).encode('utf-8'),
     }
 

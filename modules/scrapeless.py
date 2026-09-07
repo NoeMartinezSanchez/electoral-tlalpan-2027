@@ -336,7 +336,7 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
 
 def _texto_item(item, red):
     if red == 'TikTok':
-        return _obtener(item, 'desc', 'title') or ''
+        return _obtener(item, 'description', 'desc', 'title') or ''
     caption = _obtener(item, 'caption_text', 'caption')
     if isinstance(caption, dict):
         return caption.get('text') or ''
@@ -345,7 +345,7 @@ def _texto_item(item, red):
 
 def _autor_item(item, red):
     if red == 'TikTok':
-        return _obtener(item, 'nickname', 'uniqueId', default='') or \
+        return _obtener(item, 'profile_username', 'nickname', 'uniqueId', default='') or \
             ((item.get('author') or {}).get('uniqueId') or '')
     autor = _obtener(item, 'username', default='')
     if not autor:
@@ -356,9 +356,11 @@ def _autor_item(item, red):
 def _stats_tiktok(item):
     stats = item.get('stats') or {}
     return {
-        'likes': int(stats.get('diggCount') or 0),
-        'comentarios': int(stats.get('commentCount') or 0),
-        'compartidos': int(stats.get('shareCount') or 0),
+        'likes': int(item.get('like_count') or stats.get('diggCount') or 0),
+        'comentarios': int(item.get('comment_count') or stats.get('commentCount') or 0),
+        'compartidos': int(item.get('share_count') or stats.get('shareCount') or 0),
+        'vistas': int(item.get('play_count') or stats.get('playCount') or 0),
+        'guardados': int(item.get('collect_count') or stats.get('collectCount') or 0),
     }
 
 
@@ -367,19 +369,31 @@ def _stats_instagram(item):
         'likes': int(_obtener(item, 'like_count', 'likes') or 0),
         'comentarios': int(_obtener(item, 'comment_count', 'comments') or 0),
         'compartidos': int(_obtener(item, 'share_count', 'shares') or 0),
+        'vistas': 0,
+        'guardados': 0,
     }
 
 
 def _extraer_fecha(item):
-    marca = _obtener(item, 'createTime', 'taken_at', 'timestamp')
+    marca = _obtener(item, 'create_time', 'createTime', 'taken_at', 'timestamp')
     if marca is None:
         return datetime.now()
     if isinstance(marca, (int, float)):
         return datetime.fromtimestamp(marca)
     try:
-        return datetime.fromisoformat(str(marca).replace('Z', '+00:00'))
+        # Se normaliza a naive (UTC) para mantener consistencia con el demo
+        return datetime.fromisoformat(str(marca).replace('Z', '+00:00')).replace(tzinfo=None)
     except (ValueError, TypeError):
         return datetime.now()
+
+
+def extraer_hashtags_item(item) -> list:
+    """Hashtags del item si vienen como lista (con '#'), o extraídos del texto."""
+    tags = _obtener(item, 'hashtags', default=None)
+    verso = re.findall(r'#([\wáéíóúñü]+)', _texto_item(item, 'TikTok'))
+    if isinstance(tags, list) and tags:
+        return [str(t).lstrip('#') for t in tags]
+    return verso
 
 
 def extraer_hashtags(texto: str) -> list:
@@ -419,17 +433,19 @@ def normalizar_posts(red: str, items: list) -> pd.DataFrame:
         texto = _texto_item(item, red)
         autor = _autor_item(item, red)
         estadisticas = _stats_tiktok(item) if red == 'TikTok' else _stats_instagram(item)
-        id_post = int(_obtener(item, 'id', 'pk', default=0) or 100000 + i)
+        id_post = int(_obtener(item, 'post_id', 'id', 'pk', default=0) or 100000 + i)
         registros.append({
             'id_post': id_post,
             'red_social': red,
             'usuario': f'@{autor}' if autor and not autor.startswith('@') else (autor or f'usuario_{i + 1}'),
             'fecha': _extraer_fecha(item),
             'texto': texto,
-            'hashtags': extraer_hashtags(texto),
+            'hashtags': extraer_hashtags_item(item) if red == 'TikTok' else extraer_hashtags(texto),
             'likes': estadisticas['likes'],
             'comentarios': estadisticas['comentarios'],
             'compartidos': estadisticas['compartidos'],
+            'vistas': estadisticas['vistas'],
+            'guardados': estadisticas['guardados'],
             'sentimiento': clasificar_sentimiento(texto),
             'tema_electoral': clasificar_tema(texto),
         })

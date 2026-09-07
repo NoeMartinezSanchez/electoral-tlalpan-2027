@@ -11,8 +11,8 @@ from utils import mostrar_configuracion_extraccion
 
 COLUMNAS_POSTS = [
     'id_post', 'red_social', 'usuario', 'fecha', 'texto', 'hashtags', 'likes',
-    'comentarios', 'compartidos', 'sentimiento', 'tema_electoral',
-    'engagement', 'engagement_rate'
+    'comentarios', 'compartidos', 'vistas', 'guardados', 'sentimiento',
+    'tema_electoral', 'engagement', 'engagement_rate'
 ]
 
 def df_posts_vacio() -> pd.DataFrame:

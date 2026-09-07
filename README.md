@@ -139,6 +139,10 @@ Cada extracción exitosa se guarda en `datos_extraidos/` (gitignored):
 En la app, el expander "🔎 Ver estructura del resultado" muestra un adelanto y
 botones **📥 Descargar CSV / JSON** de la última extracción.
 
+La tabla normalizada incluye las columnas `vistas` (reproducciones) y
+`guardados` (marcados), además del engagement (`likes + comentarios +
+compartidos`) para análisis de alcance y rendimiento.
+
 ### Costo y activación
 
 - Scrapeless cobra **solo por peticiones exitosas** (HTTP 200 con JSON válido);
