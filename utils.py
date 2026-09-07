@@ -258,6 +258,7 @@ def _inicializar_config_extraccion():
         'scrapeless_api_key': '',
         'scrapeless_balance': None,
         'posts_origen': 'sintetico',
+        'estado_extraccion': None,
     }
     for clave, valor in valores_por_defecto.items():
         if clave not in st.session_state:
@@ -305,13 +306,16 @@ def _ejecutar_extraccion():
     plan = _armar_plan()
 
     if st.session_state.get('ambito_extraccion') != 'keyword':
-        st.warning("👤 El ámbito 'Perfil definido' estará disponible en una próxima fase.")
+        st.session_state['estado_extraccion'] = ('aviso',
+            "👤 El ámbito 'Perfil definido' estará disponible en una próxima fase.")
     if not any(cfg['activo'] and cfg['consulta'] for cfg in plan):
-        st.warning("⚠️ Activa al menos una red e ingresa una palabra clave/hashtag.")
+        st.session_state['estado_extraccion'] = ('aviso',
+            "⚠️ Activa al menos una red e ingresa una palabra clave/hashtag.")
         return
     if not api_key or balance is None or balance['creditos'] <= 0:
-        st.warning("⚠️ Sin saldo disponible o API Key inválida. Se usarán DATOS SINTÉTICOS "
-                   "(modo verificación de saldo + fallback).")
+        st.session_state['estado_extraccion'] = ('aviso',
+            "⚠️ Sin saldo disponible o API Key inválida. Se usaron DATOS SINTÉTICOS "
+            "(modo verificación de saldo + fallback).")
         _fallback_sintetico()
         st.rerun()
         return
@@ -323,19 +327,37 @@ def _ejecutar_extraccion():
         st.session_state.posts_sociales = resultado['df']
         st.session_state.posts_origen = 'real'
         st.session_state.fecha_extraccion = datetime.now()
+        st.session_state['estado_extraccion'] = (
+            'ok', f"✅ {len(resultado['df'])} posts reales descargados de {redes_activas}.")
         st.toast(f"✅ {len(resultado['df'])} posts reales descargados", icon="✅")
     else:
-        st.warning(f"⚠️ Fallo en la extracción: {resultado['error']}. Se usarán DATOS SINTÉTICOS.")
+        st.session_state['estado_extraccion'] = (
+            'error', f"Fallo en la extracción: {resultado['error']}. Se usaron DATOS SINTÉTICOS.")
         _fallback_sintetico()
     st.rerun()
 
 def _restablecer_sintetico():
     """Regenera datos sintéticos y vuelve al modo demo."""
     _fallback_sintetico()
+    st.session_state['estado_extraccion'] = ('aviso', 'Modo demo: datos sintéticos regenerados.')
     st.rerun()
+
+def _render_estado_extraccion():
+    """Renderiza el estado de la última extracción guardado en session_state."""
+    estado = st.session_state.get('estado_extraccion')
+    if not estado:
+        return
+    tipo, texto = estado
+    if tipo == 'ok':
+        st.success(texto)
+    elif tipo == 'error':
+        st.error(texto)
+    else:
+        st.warning(texto)
 
 def _mostrar_config_real():
     """Panel de configuración para el modo Real (Scrapeless)."""
+    _render_estado_extraccion()
     col_sal, col_ver = st.columns([3, 1])
     with col_sal:
         balance = st.session_state.get('scrapeless_balance')
@@ -395,8 +417,9 @@ def _mostrar_config_real():
             _restablecer_sintetico()
 
     st.caption("Los actores de búsqueda se centralizan en `modules/scrapeless.py` "
-               "(dict `ACTORES`); confírmalos en el dashboard de Scrapeless + verifica "
-               "tu API Key para activar llamadas reales.")
+               "(dict `ACTORES`). Para activar llamadas reales confirma el nombre del "
+               "actor y sus parámetros en el dashboard de Scrapeless (Scrape API → red "
+               "→ generar código) y ajústalos si difieren.")
 
 def mostrar_configuracion_extraccion():
     """

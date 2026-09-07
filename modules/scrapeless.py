@@ -129,6 +129,26 @@ def obtener_balance(api_key: str) -> Optional[dict]:
         return None
 
 
+def _mensaje_error(body):
+    """
+    Extrae un mensaje de error de un body de respuesta de Scrapeless si existe.
+    Scrapeless a veces responde HTTP 200 con un body tipo {'code': N, 'message': ...},
+    por lo que hay que revisar el contenido además del código HTTP.
+
+    Retorna:
+        str con el mensaje, o None si el body no parece un error.
+    """
+    if not isinstance(body, dict):
+        return None
+    if body.get('success') is False:
+        return body.get('message') or str(body.get('error') or 'Respuesta fallida')
+    codigo = body.get('code')
+    if codigo is not None and codigo not in (200, 0):
+        return (body.get('message') or body.get('msg') or body.get('error')
+                or f'Código de error: {codigo}')
+    return None
+
+
 def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
                    max_polls: int = 25, poll_interval: int = 3,
                    progress=None) -> dict:
@@ -143,6 +163,9 @@ def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
         ENDPOINT_SOLICITUD, api_key, {'actor': actor, 'input': input_dict}
     )
     if status == 200:
+        mensaje = _mensaje_error(body)
+        if mensaje:
+            return {'error': mensaje}
         return body
     if status == 201:
         task_id = (body or {}).get('taskId')
@@ -154,9 +177,11 @@ def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
             time.sleep(poll_interval)
             status, body = _llamar_api(f'{ENDPOINT_RESULTADO}{task_id}', api_key)
             if status == 200:
-                return body
+                mensaje = _mensaje_error(body)
+                return {'error': mensaje} if mensaje else body
             if status != 201:
-                break
+                mensaje = _mensaje_error(body)
+                return {'error': mensaje or f'HTTP {status}'}
         return {'error': f'Tiempo de espera agotado tras {max_polls} intentos'}
     mensajes_http = {
         400: 'Parámetros inválidos (400)',
@@ -164,7 +189,8 @@ def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
         429: 'Rate limit excedido (429)',
         500: 'Error interno del servidor (500)',
     }
-    detalle = (body or {}).get('error') or (body or {}).get('message') or ''
+    detalle = _mensaje_error(body) or (body or {}).get('error') \
+        or (body or {}).get('message') or ''
     return {'error': mensajes_http.get(status, f'HTTP {status}')
                      + (f': {detalle}' if detalle else '')}
 
@@ -196,7 +222,7 @@ def buscar_posts_tiktok(keyword: str, limite: int = 35, api_key: Optional[str] =
         }, api_key)
         if 'error' in resultado:
             return items, {'error': resultado['error']}
-        pagina = resultado.get('items') or []
+        pagina = resultado.get('items') or resultado.get('data') or []
         if not pagina:
             break
         items.extend(pagina)
@@ -261,8 +287,11 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     if not frames:
         mensaje = '; '.join(errores) if errores else \
             'El plan no produjo datos (revisa las palabras clave y las redes activas).'
+        print(f'SCRAPELESS: plan sin resultados -> {mensaje}')
         return {'df': None, 'posts_obtenidos': 0, 'errores': errores, 'error': mensaje}
     df = pd.concat(frames, ignore_index=True)
+    if errores:
+        print(f'SCRAPELESS: plan con errores parciales -> {errores}')
     return {'df': df, 'posts_obtenidos': len(df), 'errores': errores, 'error': None}
 
 
