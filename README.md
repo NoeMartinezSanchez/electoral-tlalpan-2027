@@ -26,7 +26,8 @@ saldo disponible.
   top temas, distribución por red y sentimiento en el tiempo.
 - Filtros por red social, tema electoral y rango de fechas.
 - **Dos modos de datos**: demo (genera 500–800 posts sintéticos) y **real**
-  (descarga desde Scrapeless por palabra clave/hashtag). Exportación a **CSV**.
+  (descarga desde Scrapeless las publicaciones de un **perfil de TikTok**).
+  Exportación a **CSV**.
 
 ## 🛠️ Stack técnico
 
@@ -97,9 +98,16 @@ pública.
 ## 🚀 Extracción real de datos (Scrapeless)
 
 En la **Pestaña 2** puedes alternar entre **Modo demo (sintético)** y
-**🔴 Real (Scrapeless)**: descarga datos reales de **TikTok e Instagram** por
-**palabra clave / hashtag**, integrándolos a la analítica existente (KPIs,
-series, wordcloud, sentimiento, CSV).
+**🔴 Real (Scrapeless)**: el flujo real soportado descarga las publicaciones
+recientes de un **perfil de TikTok (@usuario)** —título, texto, hashtags y
+engagement (likes, comentarios, compartidos)— e integra los resultados a la
+analítica existente (KPIs, series, wordcloud, sentimiento, CSV).
+
+> ⚠️ **Limitaciones del proveedor**: Scrapeless deprecó el actor de búsqueda
+> por palabra clave/hashtag de TikTok (`scraper.tiktok.search`) y **no publica
+> actor para Instagram**, por lo que ambos ámbitos quedan deshabilitados en la
+> app (se muestran con un aviso). Cuando el proveedor publique esos actores,
+> se reactivan desde el dict `ACTORES`.
 
 ### Dónde pegar tu API Key de Scrapeless
 
@@ -115,11 +123,10 @@ API_KEY = "tu_api_key_real"
 2. En la app: Pestaña 2 → `🔴 Real (Scrapeless)` → campo `🔑 API Key de
    Scrapeless` (se persiste solo durante la sesión).
 
-### Configuración por red social
+### Configuración
 
-El panel permite, para TikTok y por separado para Instagram:
-habilitar la red, escribir la **palabra clave o hashtag** y elegir el
-**número de publicaciones** (5–200). También muestra la **estimación de
+El panel permite elegir el **@usuario de TikTok** a monitorear y el **número de
+publicaciones** (5–200) a descargar. También muestra la **estimación de
 peticiones y costo USD** contra tu **saldo** (consultado con `GET /api/v1/me`).
 
 ### Costo y activación
@@ -128,23 +135,18 @@ peticiones y costo USD** contra tu **saldo** (consultado con `GET /api/v1/me`).
   las cacheadas o fallidas no cuestan.
 - Las cuentas nuevas incluyen **~$5 de crédito gratis** (sin tarjeta).
 - Comportamiento actual: **modo verificación de saldo + fallback**. Si no hay
-  key, saldo o la llamada falla, la app avisa y vuelve a **datos sintéticos**
-  automáticamente.
-- El scraper busca por palabra clave. El ámbito **"Perfil definido"** (descargar
-  publicaciones de un usuario específico) está deshabilitado: se implementa en
-  una próxima fase.
+  key, saldo o la llamada falla, la app avisa (con el error real de Scrapeless)
+  y vuelve a **datos sintéticos** automáticamente.
 
-### Actores de la API (importante)
+### Actores de la API
 
-Los nombres de actor están centralizados en `modules/scrapeless.py` (dict
-`ACTORES`). Confirma el nombre exacto de cada actor y sus parámetros en tu
-dashboard de Scrapeless (**Scrape API → seleccionar red → generar código**) y
-ajústalos si difieren:
+Centralizados en `modules/scrapeless.py` (dict `ACTORES`). El flujo de perfil
+usa dos actores confirmados:
 
-| Red | Actor de búsqueda (placeholder a confirmar) |
-|---|---|
-| TikTok | `scraper.tiktok.search` |
-| Instagram | `scraper.instagram.hashtag.search` |
+| Paso | Actor | Input |
+|---|---|---|
+| Resolver perfil | `scraper.tiktok.user.detail` | `unique_id` (sin @) |
+| Publicaciones | `scraper.tiktok.user.work` | `sec_uid`, `cursor`, `count` |
 
 ## 📁 Estructura del repositorio
 

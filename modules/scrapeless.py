@@ -19,20 +19,23 @@ ENDPOINT_SOLICITUD = f'{BASE_URL}/api/v1/scraper/request'
 ENDPOINT_RESULTADO = f'{BASE_URL}/api/v1/scraper/result/'
 ENDPOINT_SALDO = f'{BASE_URL}/api/v1/me'
 
-# Actores de la Scraping API por red social.
-# NOTA: verifica el nombre exacto de cada actor en el dashboard de Scrapeless
-# (Scrape API -> seleccionar red -> configurar parámetros -> generar código).
+# Actores de la Scraping API por red social (confirmados en el apidoc público).
+# 'busqueda' (palabra clave) de TikTok fue deprecado por Scrapeless y no hay
+# actor público para Instagram; el flujo real soportado es el perfil de TikTok.
 ACTORES = {
     'TikTok': {
-        'busqueda': 'scraper.tiktok.search',
         'perfil': 'scraper.tiktok.user.detail',
         'publicaciones_perfil': 'scraper.tiktok.user.work',
     },
-    'Instagram': {
-        'busqueda': 'scraper.instagram.hashtag.search',
-        'perfil': 'scraper.instagram.user.detail',
-    },
+    'Instagram': {},
 }
+
+# Mensajes para los flujos que Scrapeless ya no ofrece
+MENSAJE_KEYWORD_NO_SOPORTADA = (
+    'La búsqueda por palabra clave/hashtag de TikTok ya no está soportada '
+    'por Scrapeless (actor deprecado). Usa el ámbito "Perfil definido" con un @usuario.'
+)
+MENSAJE_INSTAGRAM_NO_SOPORTADO = 'Instagram no cuenta con actor público en Scrapeless (por ahora).'
 
 # Resultados máximos por llamada de búsqueda (base para estimar paginación)
 RESULTADOS_POR_LLAMADA = 35
@@ -199,9 +202,24 @@ def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
 
 def buscar_posts_tiktok(keyword: str, limite: int = 35, api_key: Optional[str] = None):
     """
-    Busca publicaciones públicas de TikTok por palabra clave o hashtag.
-    Usa el actor de búsqueda definido en ACTORES['TikTok']['busqueda'] y pagina
-    con 'cursor' hasta alcanzar el límite solicitado.
+    Búsqueda por palabra clave/hashtag de TikTok (fase 1 original).
+    Scrapeless depreco el actor de búsqueda, por lo que este flujo ya no es
+    posible por la API; se conserva únicamente como máscara informativa.
+
+    Retorna:
+        tuple (items, error): lista vacía y el mensaje de no soportado.
+    """
+    return [], {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
+
+
+def buscar_posts_perfil_tiktok(usuario: str, limite: int = 35, api_key: Optional[str] = None):
+    """
+    Recopila las publicaciones públicas recientes de un usuario de TikTok.
+    Flujo de 2 actores confirmados en Scrapeless:
+    - `scraper.tiktok.user.detail` (unique_id) resuelve el `sec_uid`.
+    - `scraper.tiktok.user.work` (sec_uid, cursor, count) devuelve `items[]`.
+    Solo avanza de página si la propia respuesta indica `has_more` y trae un
+    `cursor` (no se inventan campos de continuación).
 
     Retorna:
         tuple (items, error): items crudos de la API y error (None si OK).
@@ -209,16 +227,24 @@ def buscar_posts_tiktok(keyword: str, limite: int = 35, api_key: Optional[str] =
     api_key = api_key or obtener_api_key()
     if not api_key:
         return [], {'error': 'No hay API Key configurada'}
-    actor = ACTORES['TikTok']['busqueda']
+
+    perfil = ejecutar_actor(ACTORES['TikTok']['perfil'],
+                            {'unique_id': usuario.lstrip('@')}, api_key)
+    if 'error' in perfil:
+        return [], {'error': perfil['error']}
+    sec_uid = perfil.get('sec_uid')
+    if not sec_uid:
+        return [], {'error': f'No se pudo obtener el sec_uid del usuario @{usuario}'}
+
     items = []
     cursor = '0'
     restante = min(int(limite), 200)
     while restante > 0:
         cantidad = min(RESULTADOS_POR_LLAMADA, restante)
-        resultado = ejecutar_actor(actor, {
-            'keyword': keyword,
-            'count': cantidad,
+        resultado = ejecutar_actor(ACTORES['TikTok']['publicaciones_perfil'], {
+            'sec_uid': sec_uid,
             'cursor': cursor,
+            'count': cantidad,
         }, api_key)
         if 'error' in resultado:
             return items, {'error': resultado['error']}
@@ -227,39 +253,17 @@ def buscar_posts_tiktok(keyword: str, limite: int = 35, api_key: Optional[str] =
             break
         items.extend(pagina)
         restante -= len(pagina)
-        nuevo_cursor = resultado.get('cursor') or resultado.get('has_more')
-        if not nuevo_cursor or str(nuevo_cursor) == cursor or not resultado.get('has_more', True):
+        if resultado.get('has_more') is not True or not resultado.get('cursor'):
             break
-        cursor = str(nuevo_cursor)
-    return items[:int(limite)], None
-
-
-def buscar_posts_instagram(keyword: str, limite: int = 35, api_key: Optional[str] = None):
-    """
-    Busca publicaciones públicas de Instagram por hashtag o palabra clave.
-    Usa el actor de búsqueda definido en ACTORES['Instagram']['busqueda'].
-
-    Retorna:
-        tuple (items, error): items crudos de la API y error (None si OK).
-    """
-    api_key = api_key or obtener_api_key()
-    if not api_key:
-        return [], {'error': 'No hay API Key configurada'}
-    actor = ACTORES['Instagram']['busqueda']
-    cantidad = min(RESULTADOS_POR_LLAMADA, int(limite))
-    resultado = ejecutar_actor(actor, {
-        'keyword': keyword,
-        'count': cantidad,
-    }, api_key)
-    if 'error' in resultado:
-        return [], {'error': resultado['error']}
-    items = resultado.get('items') or resultado.get('data') or []
+        cursor = str(resultado['cursor'])
     return items[:int(limite)], None
 
 
 def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     """
-    Ejecuta un plan de extracción (una o varias redes por palabra clave/hashtag).
+    Ejecuta un plan de extracción real. El flujo soportado hoy es el perfil de
+    TikTok (ámbito 'perfil'); Instagram y la búsqueda por palabra clave quedan
+    fuera porque Scrapeless no los publica, y se reportan como errores claros.
 
     Retorna:
         dict con 'df' (DataFrame normalizado), 'posts_obtenidos', 'errores' y 'error'.
@@ -271,12 +275,17 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
         if not (config.get('activo') and config.get('consulta')):
             continue
         red = config['red']
-        objetivo = config['consulta'].strip().lstrip('#')
+        ambito = config.get('ambito', 'perfil')
+        objetivo = config['consulta'].strip().lstrip('@')
         limite = int(config.get('limite') or RESULTADOS_POR_LLAMADA)
-        if red == 'TikTok':
-            items, error = buscar_posts_tiktok(objetivo, limite, api_key=api_key)
+        if red == 'TikTok' and ambito == 'perfil':
+            items, error = buscar_posts_perfil_tiktok(objetivo, limite, api_key=api_key)
+        elif red == 'TikTok':
+            error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
+            items = []
         elif red == 'Instagram':
-            items, error = buscar_posts_instagram(objetivo, limite, api_key=api_key)
+            error = {'error': MENSAJE_INSTAGRAM_NO_SOPORTADO}
+            items = []
         else:
             continue
         if error:
@@ -286,7 +295,7 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
             frames.append(normalizar_posts(red, items))
     if not frames:
         mensaje = '; '.join(errores) if errores else \
-            'El plan no produjo datos (revisa las palabras clave y las redes activas).'
+            'El plan no produjo datos (revisa el @usuario y las redes activas).'
         print(f'SCRAPELESS: plan sin resultados -> {mensaje}')
         return {'df': None, 'posts_obtenidos': 0, 'errores': errores, 'error': mensaje}
     df = pd.concat(frames, ignore_index=True)
@@ -312,6 +321,8 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
         llamadas = max(1, math.ceil(
             int(config.get('limite') or RESULTADOS_POR_LLAMADA) / RESULTADOS_POR_LLAMADA
         ))
+        if config.get('ambito') == 'perfil':
+            llamadas += 1  # resolución del perfil (user.detail) + páginas
         peticiones += llamadas
         costo += llamadas * COSTO_POR_PETICION.get(config['red'], 0.02)
     costo = round(costo, 2)

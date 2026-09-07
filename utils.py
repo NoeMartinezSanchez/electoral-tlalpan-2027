@@ -266,16 +266,19 @@ def _inicializar_config_extraccion():
 
 def _armar_plan() -> list:
     """Construye el plan de extracción a partir de los widgets de configuración."""
+    ambito = st.session_state.get('ambito_extraccion', 'perfil')
     return [
         {
             'red': 'TikTok',
+            'ambito': ambito,
             'activo': bool(st.session_state.get('cfg_tt_activa')),
             'consulta': st.session_state.get('cfg_tt_keyword', '').strip(),
             'limite': int(st.session_state.get('cfg_tt_limite', 35)),
         },
         {
             'red': 'Instagram',
-            'activo': bool(st.session_state.get('cfg_ig_activa')),
+            'ambito': ambito,
+            'activo': False,
             'consulta': st.session_state.get('cfg_ig_keyword', '').strip(),
             'limite': int(st.session_state.get('cfg_ig_limite', 35)),
         },
@@ -305,12 +308,14 @@ def _ejecutar_extraccion():
     st.session_state.scrapeless_balance = balance
     plan = _armar_plan()
 
-    if st.session_state.get('ambito_extraccion') != 'keyword':
+    if st.session_state.get('ambito_extraccion') == 'keyword':
         st.session_state['estado_extraccion'] = ('aviso',
-            "👤 El ámbito 'Perfil definido' estará disponible en una próxima fase.")
+            "🔑 La búsqueda por palabra clave/hashtag ya no está soportada por Scrapeless. "
+            "Usa el ámbito 'Perfil definido' con un @usuario de TikTok (o el Modo demo).")
+        return
     if not any(cfg['activo'] and cfg['consulta'] for cfg in plan):
         st.session_state['estado_extraccion'] = ('aviso',
-            "⚠️ Activa al menos una red e ingresa una palabra clave/hashtag.")
+            "⚠️ Activa al menos una red e ingresa un @usuario de TikTok.")
         return
     if not api_key or balance is None or balance['creditos'] <= 0:
         st.session_state['estado_extraccion'] = ('aviso',
@@ -320,15 +325,15 @@ def _ejecutar_extraccion():
         st.rerun()
         return
 
-    redes_activas = ', '.join(cfg['red'] for cfg in plan if cfg['activo'] and cfg['consulta'])
-    with st.spinner(f"Descargando datos reales de {redes_activas} desde Scrapeless..."):
+    redes_activas = ', '.join(cfg['consulta'] for cfg in plan if cfg['activo'] and cfg['consulta'])
+    with st.spinner(f"Descargando publicaciones reales de {redes_activas} desde Scrapeless..."):
         resultado = ejecutar_plan(plan, api_key=api_key)
     if resultado['df'] is not None:
         st.session_state.posts_sociales = resultado['df']
         st.session_state.posts_origen = 'real'
         st.session_state.fecha_extraccion = datetime.now()
         st.session_state['estado_extraccion'] = (
-            'ok', f"✅ {len(resultado['df'])} posts reales descargados de {redes_activas}.")
+            'ok', f"✅ {len(resultado['df'])} posts reales descargados de @{redes_activas}.")
         st.toast(f"✅ {len(resultado['df'])} posts reales descargados", icon="✅")
     else:
         st.session_state['estado_extraccion'] = (
@@ -371,33 +376,37 @@ def _mostrar_config_real():
 
     st.radio(
         "Ámbito de extracción:",
-        options=['keyword', 'perfil'],
-        format_func=lambda o: "🔑 Palabra clave / Hashtag (activo)"
-                              if o == 'keyword' else "👤 Perfil definido (próxima fase)",
+        options=['perfil', 'keyword'],
+        format_func=lambda o: "👤 Perfil definido (TikTok) · activo"
+                              if o == 'perfil' else "🔑 Palabra clave (no disponible)",
         horizontal=True,
         key='ambito_extraccion',
     )
-    if st.session_state.get('ambito_extraccion') != 'keyword':
-        st.info("El ámbito 'Perfil definido' (descargar publicaciones de un usuario específico) "
-                "se implementará en una próxima fase.")
+    if st.session_state.get('ambito_extraccion') == 'keyword':
+        st.warning("🔑 La búsqueda por palabra clave/hashtag ya no está soportada por "
+                   "Scrapeless (actor deprecado) e Instagram no tiene actor público. "
+                   "Cambia a 'Perfil definido' con un @usuario de TikTok.")
 
     st.markdown("### 📝 Configuración por red social")
     col_tt, col_ig = st.columns(2)
     with col_tt:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("**🎵 TikTok**")
-        st.checkbox("Habilitar", key='cfg_tt_activa')
-        st.text_input("Palabra clave / hashtag", key='cfg_tt_keyword',
-                      placeholder="ej. #Tlalpan o 'candidata alcaldia'")
-        st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite')
+        st.markdown("**🎵 TikTok (disponible)**")
+        ambito = st.session_state.get('ambito_extraccion', 'perfil')
+        if ambito == 'perfil':
+            st.checkbox("Habilitar", key='cfg_tt_activa')
+            st.text_input("Usuario de TikTok (@cuenta)", key='cfg_tt_keyword',
+                          placeholder="ej. @gobiernocdmx o alcaldia_tlalpan")
+            st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite')
+        else:
+            st.info("La búsqueda por palabra clave en TikTok no está soportada por Scrapeless.")
         st.markdown('</div>', unsafe_allow_html=True)
     with col_ig:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("**📸 Instagram**")
-        st.checkbox("Habilitar", key='cfg_ig_activa')
-        st.text_input("Palabra clave / hashtag", key='cfg_ig_keyword',
-                      placeholder="ej. #Tlalpan o 'seguridad alcaldia'")
-        st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_ig_limite')
+        st.markdown("**📸 Instagram (no disponible)**")
+        st.checkbox("Habilitar", key='cfg_ig_activa', value=False, disabled=True,
+                    help="Scrapeless no expone actor público para Instagram.")
+        st.caption("Instagram se deshabilitará hasta que Scrapeless publique su actor.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     balance_actual = st.session_state.get('scrapeless_balance')
@@ -416,16 +425,15 @@ def _mostrar_config_real():
         if st.button("🔄 Restablecer a sintéticos", use_container_width=True):
             _restablecer_sintetico()
 
-    st.caption("Los actores de búsqueda se centralizan en `modules/scrapeless.py` "
-               "(dict `ACTORES`). Para activar llamadas reales confirma el nombre del "
-               "actor y sus parámetros en el dashboard de Scrapeless (Scrape API → red "
-               "→ generar código) y ajústalos si difieren.")
+    st.caption("Extracción real soportada: perfil de TikTok (`scraper.tiktok.user.detail` + "
+               "`scraper.tiktok.user.work`). La búsqueda por palabra clave de TikTok y el "
+               "actor de Instagram no están publicados por Scrapeless; por eso se ocultan.")
 
 def mostrar_configuracion_extraccion():
     """
     Panel de configuración de datos de la Pestaña 2: modo demo (sintético) o
-    extracción real con la Scraping API de Scrapeless (búsqueda por palabra
-    clave/hashtag por red social).
+    extracción real con la Scraping API de Scrapeless (perfil de TikTok, por
+    usuario, con engagement real).
     """
     _inicializar_config_extraccion()
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-top: 8px;'>"
