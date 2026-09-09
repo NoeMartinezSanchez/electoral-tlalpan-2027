@@ -232,7 +232,7 @@ def mostrar_distribucion_redes(df):
             'TikTok': '#ff0050',
             'Facebook': '#1877f2',
             'Instagram': '#c13584',
-            'X': '#0f1419'
+            'X': '#1DA1F2'
         }
     )
     fig.update_layout(
@@ -265,8 +265,9 @@ def mostrar_dashboard_redes_sociales():
     Define los controles de filtrado y actualiza la visualización de analíticas.
     """
     st.markdown("<h2 style='font-size: 22px; font-weight: 700; margin-top: 10px; margin-bottom: 2px;'>📊 Dashboard de Redes Sociales</h2>", unsafe_allow_html=True)
-    st.caption("Monitoreo estadístico y semántico de datos reales extraídos de TikTok "
-               "(Scraping API) e Instagram (API interna web_profile_info vía Scraping Browser)")
+    st.caption("Monitoreo estadístico y semántico de datos reales: TikTok (Scraping API), "
+               "Instagram (API interna web_profile_info vía Scraping Browser) y X/Twitter "
+               "(actor AI scraper.grok)")
 
     # 0.1 Badge y tarjeta del perfil de Instagram si la última extracción lo trajo
     perfil_ig = st.session_state.get('perfil_instagram') if 'perfil_instagram' in st.session_state else None
@@ -292,6 +293,20 @@ def mostrar_dashboard_redes_sociales():
             sig = f"{perfil_ig.get('siguiendo', 0):,}" if perfil_ig.get('siguiendo_disponibles') else 'n/d'
             st.caption(f"👥 {seg} seguidores · ➕ {sig} siguiendo · "
                        f"📷 {perfil_ig.get('publicaciones', 0):,} publicaciones")
+        st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
+                    unsafe_allow_html=True)
+
+    # 0.1b Badge de X/Twitter si ya hay posts de X en los datos cargados
+    df_session = st.session_state.get('posts_sociales')
+    if df_session is not None and not df_session.empty \
+            and 'red_social' in df_session.columns \
+            and (df_session['red_social'] == 'X').any():
+        usuarios_x = df_session.loc[df_session['red_social'] == 'X', 'usuario'].unique()
+        st.markdown('<span style="background:#1DA1F2;color:#fff;padding:3px 10px;'
+                    'border-radius:9999px;font-size:12px;font-weight:600;">𝕏 X (Twitter) · '
+                    'Extracción real vía Grok</span>', unsafe_allow_html=True)
+        st.caption("Mostrando posts citados por Grok (muestreo, no feed completo). "
+                   "Likes/comentarios no disponibles en esta API (0); vistas sí.")
         st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
                     unsafe_allow_html=True)
 

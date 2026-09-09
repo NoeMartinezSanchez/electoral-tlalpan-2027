@@ -21,6 +21,23 @@ ENDPOINT_SOLICITUD = f'{BASE_URL}/api/v1/scraper/request'
 ENDPOINT_RESULTADO = f'{BASE_URL}/api/v1/scraper/result/'
 ENDPOINT_SALDO = f'{BASE_URL}/api/v1/me'
 
+# Endpoints de la familia "AI-answer" (scraper.grok, scraper.chatgpt, etc.).
+# A diferencia de los actores de sitio (v1), estos usan /api/v2/scraper/execute
+# y devuelven un envelope {"status", "task_id", "task_result"}; si la respuesta
+# es asíncrona, hay que hacer polling a /api/v2/scraper/result/{task_id}.
+ENDPOINT_EJECUTAR_V2 = f'{BASE_URL}/api/v2/scraper/execute'
+ENDPOINT_RESULTADO_V2 = f'{BASE_URL}/api/v2/scraper/result/'
+
+# Actor de Grok para extraer posts de X (Twitter). Grok responde a un prompt y
+# cita posts de X en x_search_results (NO es un feed completo: es un muestreo de
+# lo que Grok considera relevante). No hay un actor dedicado "scraper.x".
+ACTOR_GROK = 'scraper.grok'
+X_SEARCH_PROMPT_TEMPLATE = 'What has @{usuario} posted on X recently?'
+X_PAIS_DEFAULT = 'MX'
+X_MODE_DEFAULT = 'MODEL_MODE_FAST'   # también válidos: AUTO y EXPERT
+COSTO_GROK = 0.15                    # costo estimado por prompt de Grok (USD)
+TIMEOUT_GROK = 120                   # Grok tarda ~16-60 s en responder
+
 # Scraping Browser (WebSocket CDP) para extracción de Instagram
 ENDPOINT_BROWSER = 'wss://browser.scrapeless.com/api/v2/browser'
 SESSION_TTL = 60            # duración de la sesión del navegador en segundos
@@ -44,6 +61,9 @@ ACTORES = {
     'TikTok': {
         'perfil': 'scraper.tiktok.user.detail',
         'publicaciones_perfil': 'scraper.tiktok.user.work',
+    },
+    'X': {
+        'perfil': ACTOR_GROK,  # scraper.grok (familia AI-answer, /api/v2/scraper/execute)
     },
     'Instagram': {},  # Instagram se extrae vía Scraping Browser, NO como actor
 }
@@ -652,6 +672,176 @@ def extraer_perfil_instagram(usuario: str, limite: int = POSTS_PRIMERA_PAGINA_IG
                 'error': f'Error inesperado en la extracción: {e}'}
 
 
+# --- Extracción de X (Twitter) con el actor AI scraper.grok ------------------
+
+def ejecutar_grok(input_dict: dict, api_key: str,
+                  max_polls: int = 30, poll_interval: int = 4) -> dict:
+    """
+    Ejecuta el actor `scraper.grok` (familia AI-answer) contra
+    `POST /api/v2/scraper/execute`. Maneja respuestas síncronas (el envelope
+    llega completo con `task_result`) y asíncronas (solo `task_id`, se hace
+    polling a `/api/v2/scraper/result/{task_id}` hasta max_polls).
+
+    Retorna:
+        dict con task_result (via 'task_result') o {'error': ...} ante fallo.
+    """
+    status, body = _llamar_api(ENDPOINT_EJECUTAR_V2, api_key,
+                               {'actor': ACTOR_GROK, 'input': input_dict},
+                               timeout=TIMEOUT_GROK)
+    if status == 200:
+        mensaje = _mensaje_error(body)
+        if mensaje:
+            return {'error': mensaje}
+        if (body or {}).get('task_result'):
+            return body
+        task_id = (body or {}).get('task_id')
+        if not task_id:
+            return {'error': 'Respuesta de Grok sin task_result ni task_id'}
+        for intento in range(max_polls):
+            time.sleep(poll_interval)
+            status, body = _llamar_api(f'{ENDPOINT_RESULTADO_V2}{task_id}',
+                                       api_key, timeout=TIMEOUT_GROK)
+            if status == 200:
+                mensaje = _mensaje_error(body)
+                if mensaje:
+                    return {'error': mensaje}
+                if (body or {}).get('task_result'):
+                    return body
+            elif status not in (201, 202):
+                mensaje = _mensaje_error(body)
+                return {'error': mensaje or f'HTTP {status}'}
+        return {'error': f'Tiempo de espera agotado tras {max_polls} intentos'}
+    mensajes_http = {
+        400: 'Parámetros inválidos (400)',
+        401: 'API Key no autorizada (401)',
+        429: 'Rate limit excedido (429)',
+        500: 'Error interno del servidor (500)',
+    }
+    detalle = _mensaje_error(body) or (body or {}).get('error') \
+        or (body or {}).get('message') or ''
+    return {'error': mensajes_http.get(status, f'HTTP {status}')
+                     + (f': {detalle}' if detalle else '')}
+
+
+def _normalizar_item_x(post: dict, usuario: str) -> dict:
+    """
+    Mapea un post crudo de `x_search_results` al esquema de item que entiende
+    `normalizar_posts` para X (mismas llaves: caption, username, timestamp).
+    `x_search_results` solo expone view_count; likes/comentarios/compartidos/
+    guardados no están disponibles y se fijan en 0.
+
+    Retorna:
+        dict con el item normalizable de un post de X.
+    """
+    texto = (post.get('text') or '').strip()
+    if not post.get('post_id') and post.get('url'):
+        # El post_id suele estar al final de la URL del post.
+        segmento = str(post['url']).rstrip('/').split('/')[-1]
+        if segmento.isdigit():
+            post = dict(post, post_id=segmento)
+    return {
+        'post_id': post.get('post_id'),
+        'caption': texto,
+        'text': texto,
+        'username': post.get('user_name') or usuario.lstrip('@'),
+        'name': post.get('name') or '',
+        'timestamp': post.get('create_time'),
+        'view_count': int(post.get('view_count') or 0),
+        'hashtags': extraer_hashtags(texto),
+        'url': post.get('url') or '',
+        'profile_image_url': post.get('profile_image_url') or '',
+    }
+
+
+def _deduplicar_posts_x(posts_crudos: list, usuario: str) -> list:
+    """
+    Desduplica los posts crudos de x_search_results usando como llaves tanto el
+    `post_id` como un hash estable del texto (por si llegan duplicados sin id o
+    con textos idénticos).
+
+    Nota: NO se filtra por user_name. En la práctica el handle real del perfil
+    puede diferir del consultado (por ejemplo al preguntar por @gobiernocdmx,
+    Grok cita al usuario real @GobCDMX), por lo que un filtro estricto por
+    user_name descartaría los posts válidos. Grok ya acota sus citas al perfil
+    pedido por el prompt.
+
+    Retorna:
+        lista desduplicada de diccionarios crudos.
+    """
+    vistos = set()
+    resultado = []
+    for post in posts_crudos or []:
+        if not isinstance(post, dict):
+            continue
+        claves = []
+        if post.get('post_id'):
+            claves.append(str(post['post_id']))
+        if post.get('text'):
+            claves.append(hashlib.md5(
+                str(post['text']).strip().lower().encode('utf-8')).hexdigest()[:8])
+        if not claves:
+            continue
+        # Se descarta si alguna llave ya se vio (duplicado por id o por texto).
+        if any(c in vistos for c in claves):
+            continue
+        vistos.update(claves)
+        resultado.append(post)
+    return resultado
+
+
+def normalizar_posts_x(posts_crudos: list, usuario: str) -> list:
+    """
+    Normaliza la lista cruda de posts de X (x_search_results de Grok) a items
+    con el esquema del dashboard. Los posts provienen de las CITAS de Grok, no
+    es un feed completo del perfil.
+
+    Retorna:
+        lista de items normalizables (vía normalizar_posts) del usuario.
+    """
+    items = [_normalizar_item_x(post, usuario)
+             for post in _deduplicar_posts_x(posts_crudos, usuario)]
+    # Conservar solo posts con contenido o id (evitar filas vacías en el DF)
+    return [i for i in items if i['caption'] or i['post_id']]
+
+
+def extraer_posts_x(usuario: str, limite: int = 20,
+                    api_key: Optional[str] = None,
+                    pais: str = X_PAIS_DEFAULT) -> dict:
+    """
+    Extrae posts recientes de un usuario de X (Twitter) usando el actor AI
+    `scraper.grok`. Grok responde al prompt "What has @<usuario> posted on X
+    recently?" y cita los posts que considera relevantes en `x_search_results`
+    (muestreo, no feed completo). Reutiliza la API Key de Scrapeless.
+    Nota: like_count/comment_count no están disponibles en esta API (0).
+
+    Retorna:
+        dict con 'success' (bool), 'posts' (items ya normalizables) y 'error'.
+    """
+    api_key = api_key or obtener_api_key()
+    if not api_key:
+        return {'success': False, 'posts': [], 'error': 'No hay API Key configurada'}
+    usuario = str(usuario).strip().lstrip('@')
+    if not usuario:
+        return {'success': False, 'posts': [], 'error': 'Usuario de X vacío'}
+    prompt = X_SEARCH_PROMPT_TEMPLATE.format(usuario=usuario)
+    print(f'SCRAPELESS: X @{usuario} - prompt: {prompt}')
+    resultado = ejecutar_grok(
+        {'prompt': prompt, 'country': pais, 'mode': X_MODE_DEFAULT}, api_key)
+    if 'error' in resultado:
+        return {'success': False, 'posts': [], 'error': resultado['error']}
+    task = resultado.get('task_result') or {}
+    posts_crudos = task.get('x_search_results') or []
+    if not posts_crudos:
+        return {'success': False, 'posts': [],
+                'error': f"No se encontraron posts de '{usuario}' en las citas de Grok"}
+    items = normalizar_posts_x(posts_crudos, usuario)[:int(limite)]
+    print(f'SCRAPELESS: X @{usuario} -> {len(items)} posts (de {len(posts_crudos)} crudos).')
+    if not items:
+        return {'success': False, 'posts': [],
+                'error': f"No se encontraron posts de '{usuario}' en las citas de Grok"}
+    return {'success': True, 'posts': items, 'error': None}
+
+
 def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     """
     Ejecuta un plan de extracción real. Flujos soportados:
@@ -688,6 +878,13 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
         elif red == 'Instagram':
             error = {'error': MENSAJE_INSTAGRAM_KEYWORD_NO_SOPORTADA}
             items = []
+        elif red in ('X', 'Twitter') and ambito == 'perfil':
+            res_x = extraer_posts_x(objetivo, limite, api_key=api_key)
+            items = res_x.get('posts') or []
+            error = res_x.get('error')
+        elif red in ('X', 'Twitter'):
+            error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
+            items = []
         else:
             continue
         if error:
@@ -717,6 +914,7 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
     comparándolo contra el saldo disponible.
     - TikTok: cuenta peticiones a la Scraping API (actor por el perfil + páginas).
     - Instagram: cuenta una única sesión de Scraping Browser (navegación + fetch).
+    - X: cuenta un único prompt al actor AI scraper.grok.
 
     Retorna:
         dict con 'peticiones', 'costo_usd', 'balance' y 'alcanza'.
@@ -730,6 +928,11 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
             # a la API interna para la primera página de posts.
             peticiones += 1
             costo += COSTO_SESION_BROWSER
+            continue
+        if config.get('red') in ('X', 'Twitter') and config.get('ambito') == 'perfil':
+            # Un prompt de Grok (la respuesta cita los posts detectados).
+            peticiones += 1
+            costo += COSTO_GROK
             continue
         llamadas = max(1, math.ceil(
             int(config.get('limite') or RESULTADOS_POR_LLAMADA) / RESULTADOS_POR_LLAMADA
@@ -783,6 +986,26 @@ def _stats_instagram(item):
         'vistas': 0,
         'guardados': 0,
     }
+
+
+def _stats_x(item):
+    """Estadísticas de X: la API de Grok solo expone view_count (vistas)."""
+    return {
+        'likes': 0,
+        'comentarios': 0,
+        'compartidos': 0,
+        'vistas': int(_obtener(item, 'view_count', 'views') or 0),
+        'guardados': 0,
+    }
+
+
+def _stats_por_red(red: str, item) -> dict:
+    """Selecciona el extractor de estadísticas según la red social del item."""
+    if red == 'TikTok':
+        return _stats_tiktok(item)
+    if red in ('X', 'Twitter'):
+        return _stats_x(item)
+    return _stats_instagram(item)
 
 
 def _extraer_fecha(item):
@@ -863,7 +1086,7 @@ def normalizar_posts(red: str, items: list) -> pd.DataFrame:
     for i, item in enumerate(items):
         texto = _texto_item(item, red)
         autor = _autor_item(item, red)
-        estadisticas = _stats_tiktok(item) if red == 'TikTok' else _stats_instagram(item)
+        estadisticas = _stats_por_red(red, item)
         id_valor = _obtener(item, 'post_id', 'id', 'pk', default=0)
         id_post = _id_numerico(id_valor, i)
         registros.append({

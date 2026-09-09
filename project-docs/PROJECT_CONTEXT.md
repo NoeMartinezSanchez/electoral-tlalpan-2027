@@ -209,6 +209,23 @@ sintética de posts.
 - Resultados guardados en `datos_extraidos/` como
   `posts_instagram_{usuario}_{timestamp}.csv` (+ `raw_instagram_*.json`).
 
+### X / Twitter (actor AI `scraper.grok`)
+- No existe un actor dedicado "scraper.x" en Scrapeless. Se usa el actor AI
+  `scraper.grok` de la familia LLM:
+  - Endpoint `POST /api/v2/scraper/execute` (no el `/api/v1/scraper/request` de
+    los actores de sitio), cabecera `x-api-token`.
+  - Input: `prompt` ("What has @usuario posted on X recently?"), `country`
+    (MX por defecto) y `mode` (`MODEL_MODE_FAST`).
+  - Respuesta envelope `{status, task_id, task_result}`; si es asíncrona se
+    hace polling a `/api/v2/scraper/result/{task_id}`.
+- Los posts vienen en `task_result.x_search_results[]` (post_id, user_name,
+  name, text, create_time RFC3339, view_count). **Es un muestreo de lo que Grok
+  cita, NO el feed completo del perfil.** Likes/comentarios no están expuestos
+  (se fijan en 0); las vistas sí (`view_count` → vistas).
+- Desduplicación por `post_id` + hash de texto; no se filtra por `user_name`
+  porque Grok puede citar el handle real del perfil (diferente al consultado).
+- Resultados en `datos_extraidos/` como `posts_x_{usuario}_{timestamp}.csv`.
+
 ### Manejo de errores
 Perfil no encontrado (404), perfil privado, 401/403 (autenticación/bloqueo), 429
 (rate limit), redirección a login (login-wall) y timeout — todos devuelven mensajes

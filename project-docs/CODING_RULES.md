@@ -441,6 +441,9 @@ sintéticos de redes sociales. Los datos llegan de Scrapeless:
 - TikTok: Scraping API sobre un perfil (`user.detail` + `user.work`).
 - Instagram: Scraping Browser (CDP) + API interna `web_profile_info`, sin login
   de Instagram. Guardados/vistas no disponibles en sesión anónima (0).
+- X/Twitter: actor AI `scraper.grok` (`/api/v2/scraper/execute`). Los posts son
+  CITAS de Grok (muestreo, no feed completo); likes/comentarios no disponibles
+  (0), vistas vía `view_count`.
 Resultados normalizados a las columnas de `COLUMNAS_POSTS` y guardados en
 `datos_extraidos/`. Todo nuevo flujo de extracción debe mantener manejo de
 errores (404/privado/401-403/429/login-wall/timeout) y docstrings en español.
