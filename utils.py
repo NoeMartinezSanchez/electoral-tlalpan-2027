@@ -259,6 +259,7 @@ def _inicializar_config_extraccion():
         'posts_origen': 'real',
         'estado_extraccion': None,
         'ultima_extraccion': None,
+        'perfil_instagram': None,
     }
     for clave, valor in valores_por_defecto.items():
         if clave not in st.session_state:
@@ -267,28 +268,32 @@ def _inicializar_config_extraccion():
 def _armar_plan() -> list:
     """Construye el plan de extracción a partir de los widgets de configuración."""
     ambito = st.session_state.get('ambito_extraccion', 'perfil')
+    red_seleccionada = st.session_state.get('red_extraccion', 'TikTok - Perfil')
+    # Solo se activa la red elegida en el selectbox; la otra queda inactiva.
+    tt_activa = bool(st.session_state.get('cfg_tt_activa')) and red_seleccionada == 'TikTok - Perfil'
+    ig_activa = bool(st.session_state.get('cfg_ig_activa')) and red_seleccionada == 'Instagram - Perfil'
     return [
         {
             'red': 'TikTok',
             'ambito': ambito,
-            'activo': bool(st.session_state.get('cfg_tt_activa')),
+            'activo': tt_activa,
             'consulta': st.session_state.get('cfg_tt_keyword', '').strip(),
             'limite': int(st.session_state.get('cfg_tt_limite', 35)),
         },
         {
             'red': 'Instagram',
             'ambito': ambito,
-            'activo': False,
+            'activo': ig_activa,
             'consulta': st.session_state.get('cfg_ig_keyword', '').strip(),
-            'limite': int(st.session_state.get('cfg_ig_limite', 35)),
+            'limite': int(st.session_state.get('cfg_ig_limite', 12)),
         },
     ]
 
-def _guardar_resultados(df, items, usuario):
+def _guardar_resultados(df, items, usuario, red_social: str = 'TikTok'):
     """
     Guarda los resultados de una extracción real en disco:
-    - `datos_extraidos/posts_<usuario>_<ts>.csv`   -> DataFrame normalizado.
-    - `datos_extraidos/raw_<usuario>_<ts>.json`    -> items crudos de Scrapeless.
+    - `datos_extraidos/posts_<red>_<usuario>_<ts>.csv` -> DataFrame normalizado.
+    - `datos_extraidos/raw_<red>_<usuario>_<ts>.json`  -> items crudos.
 
     Retorna:
         dict con rutas y bytes para descarga ('csv_path', 'json_path', 'csv_bytes', 'json_bytes').
@@ -297,12 +302,13 @@ def _guardar_resultados(df, items, usuario):
     os.makedirs(carpeta, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     usuario_limpio = usuario.replace(' ', '_')
-    csv_path = os.path.join(carpeta, f'posts_{usuario_limpio}_{ts}.csv')
-    json_path = os.path.join(carpeta, f'raw_{usuario_limpio}_{ts}.json')
+    prefijo = red_social.lower().replace(' ', '_')
+    csv_path = os.path.join(carpeta, f'posts_{prefijo}_{usuario_limpio}_{ts}.csv')
+    json_path = os.path.join(carpeta, f'raw_{prefijo}_{usuario_limpio}_{ts}.json')
     # utf-8-sig (BOM) para que Excel abra los acentos correctamente
     df.to_csv(csv_path, index=False, encoding='utf-8-sig')
     contenedor = {
-        'red_social': 'TikTok',
+        'red_social': red_social,
         'ambito': 'perfil',
         'usuario': usuario_limpio,
         'cantidad_items': len(items),
@@ -341,11 +347,12 @@ def _ejecutar_extraccion():
     if st.session_state.get('ambito_extraccion') == 'keyword':
         st.session_state['estado_extraccion'] = ('aviso',
             "🔑 La búsqueda por palabra clave/hashtag ya no está soportada por Scrapeless. "
-            "Usa el ámbito 'Perfil definido' con un @usuario de TikTok.")
+            "Usa el ámbito 'Perfil definido' con un @usuario de TikTok o de Instagram.")
         return
     if not any(cfg['activo'] and cfg['consulta'] for cfg in plan):
         st.session_state['estado_extraccion'] = ('aviso',
-            "⚠️ Activa al menos una red e ingresa un @usuario de TikTok.")
+            "⚠️ Se debe ingresar un @usuario de la red seleccionada en el panel "
+            "de configuración.")
         return
     if not api_key or balance is None or balance['creditos'] <= 0:
         st.session_state['estado_extraccion'] = ('aviso',
@@ -354,15 +361,26 @@ def _ejecutar_extraccion():
         st.rerun()
         return
 
+    red_sel = st.session_state.get('red_extraccion', 'TikTok - Perfil')
     usuarios = ', '.join(cfg['consulta'].lstrip('@') for cfg in plan if cfg['activo'] and cfg['consulta'])
-    with st.spinner(f"Descargando publicaciones reales de @{usuarios} desde Scrapeless..."):
+    if 'Instagram' in red_sel:
+        spinner_texto = f"Extrayendo perfil e Instagram posts de @{usuarios} (Scraping Browser)..."
+    else:
+        spinner_texto = f"Descargando publicaciones reales de @{usuarios} desde Scrapeless..."
+    with st.spinner(spinner_texto):
         resultado = ejecutar_plan(plan, api_key=api_key)
     if resultado['df'] is not None:
         st.session_state.posts_sociales = resultado['df']
         st.session_state.posts_origen = 'real'
         st.session_state.fecha_extraccion = datetime.now()
+        perfil_ig = resultado.get('perfil_instagram')
+        if perfil_ig:
+            # Se conserva en session_state para mostrarlo en el dashboard y en el
+            # resultado de la extracción aun después de st.rerun().
+            st.session_state.perfil_instagram = perfil_ig
         guardado = _guardar_resultados(
-            resultado['df'], resultado.get('items', []), usuarios)
+            resultado['df'], resultado.get('items', []), usuarios,
+            red_social='Instagram' if 'Instagram' in red_sel else 'TikTok')
         st.session_state.ultima_extraccion = {
             'usuario': usuarios,
             'n_items': len(resultado['df']),
@@ -400,6 +418,32 @@ def _render_resultado_extraccion():
     ultima = st.session_state.get('ultima_extraccion')
     if not ultima:
         return
+    # Tarjeta del perfil de Instagram (si la última extracción fue de Instagram).
+    perfil_ig = st.session_state.get('perfil_instagram')
+    if perfil_ig:
+        st.markdown("#### 📸 Perfil de Instagram")
+        avatar = perfil_ig.get('avatar_url')
+        if avatar:
+            try:
+                st.image(avatar, width=90, caption=f"@{ultima['usuario']}")
+            except Exception as e:
+                print(f'SCRAPELESS: no se pudo mostrar el avatar ({e})')
+                st.markdown(f"**@{ultima['usuario']}**")
+        seguidores = perfil_ig.get('seguidores', 0)
+        seg_label = f"{seguidores:,}" if perfil_ig.get('seguidores_disponibles') \
+            else 'No disponible'
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("👥 Seguidores", seg_label)
+        col_p2.metric("➕ Siguiendo",
+                      f"{perfil_ig.get('siguiendo', 0):,}"
+                      if perfil_ig.get('siguiendo_disponibles') else 'No disponible')
+        col_p3.metric("📷 Publicaciones", f"{perfil_ig.get('publicaciones', 0):,}")
+        st.markdown(f"**{perfil_ig.get('nombre', '')}**")
+        if perfil_ig.get('bio'):
+            st.markdown(perfil_ig['bio'])
+        if perfil_ig.get('verificado'):
+            st.caption("✅ Cuenta verificada")
+        st.markdown("---")
     with st.expander(f"🔎 Ver estructura del resultado de @{ultima['usuario']} "
                      f"({ultima['n_items']} posts)"):
         st.markdown("**Tabla normalizada (dashboard):**")
@@ -431,39 +475,67 @@ def _mostrar_config_real():
         if st.button("💳 Verificar saldo", use_container_width=True):
             _verificar_saldo()
 
+    st.selectbox(
+        "Red social a extraer:",
+        options=["TikTok - Perfil", "Instagram - Perfil"],
+        key='red_extraccion',
+        help="TikTok usa la Scraping API (actores); Instagram usa el Scraping "
+             "Browser (CDP) + la API interna web_profile_info. Ambos con la "
+             "misma API Key de Scrapeless y sin login de la red social.",
+    )
+
     st.radio(
         "Ámbito de extracción:",
         options=['perfil', 'keyword'],
-        format_func=lambda o: "👤 Perfil definido (TikTok) · activo"
+        format_func=lambda o: "👤 Perfil definido · activo"
                               if o == 'perfil' else "🔑 Palabra clave (no disponible)",
         horizontal=True,
         key='ambito_extraccion',
     )
     if st.session_state.get('ambito_extraccion') == 'keyword':
-        st.warning("🔑 La búsqueda por palabra clave/hashtag ya no está soportada por "
-                   "Scrapeless (actor deprecado) e Instagram no tiene actor público. "
-                   "Cambia a 'Perfil definido' con un @usuario de TikTok.")
+        st.warning("🔑 La búsqueda por palabra clave/hashtag ya no está soportada "
+                   "por Scrapeless. Cambia a 'Perfil definido' con un @usuario "
+                   "de TikTok o de Instagram.")
 
     st.markdown("### 📝 Configuración por red social")
+    red_seleccionada = st.session_state.get('red_extraccion', 'TikTok - Perfil')
+    ambito = st.session_state.get('ambito_extraccion', 'perfil')
+    solo_instagram = red_seleccionada == 'Instagram - Perfil'
+
     col_tt, col_ig = st.columns(2)
     with col_tt:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
         st.markdown("**🎵 TikTok (disponible)**")
-        ambito = st.session_state.get('ambito_extraccion', 'perfil')
+        habilitado_tt = not solo_instagram
         if ambito == 'perfil':
-            st.checkbox("Habilitar", key='cfg_tt_activa')
+            st.checkbox("Habilitar", key='cfg_tt_activa', value=habilitado_tt,
+                        disabled=solo_instagram)
             st.text_input("Usuario de TikTok (@cuenta)", key='cfg_tt_keyword',
+                          disabled=solo_instagram,
                           placeholder="ej. @gobiernocdmx o alcaldia_tlalpan")
-            st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite')
+            st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite',
+                      disabled=solo_instagram)
         else:
             st.info("La búsqueda por palabra clave en TikTok no está soportada por Scrapeless.")
         st.markdown('</div>', unsafe_allow_html=True)
     with col_ig:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        st.markdown("**📸 Instagram (no disponible)**")
-        st.checkbox("Habilitar", key='cfg_ig_activa', value=False, disabled=True,
-                    help="Scrapeless no expone actor público para Instagram.")
-        st.caption("Instagram se deshabilitará hasta que Scrapeless publique su actor.")
+        st.markdown("**📸 Instagram (disponible)**")
+        habilitado_ig = solo_instagram
+        if ambito == 'perfil':
+            st.checkbox("Habilitar", key='cfg_ig_activa', value=habilitado_ig,
+                        disabled=not solo_instagram,
+                        help="Extracción real vía Scraping Browser + API interna "
+                             "web_profile_info, sin login de Instagram.")
+            st.text_input("Usuario de Instagram (@cuenta)", key='cfg_ig_keyword',
+                          disabled=not solo_instagram,
+                          placeholder="ej. municipiotlalpan")
+            st.slider("Nº de publicaciones", 1, 50, 12, 1, key='cfg_ig_limite',
+                      disabled=not solo_instagram,
+                      help="Primera página de la grilla (~12); más requiere "
+                           "GraphQL, muy rate-limitado en sesión anónima.")
+        else:
+            st.info("La búsqueda por palabra clave en Instagram requiere login.")
         st.markdown('</div>', unsafe_allow_html=True)
 
     balance_actual = st.session_state.get('scrapeless_balance')
@@ -479,9 +551,10 @@ def _mostrar_config_real():
 
     _render_resultado_extraccion()
 
-    st.caption("Extracción real soportada: perfil de TikTok (`scraper.tiktok.user.detail` + "
-               "`scraper.tiktok.user.work`). La búsqueda por palabra clave de TikTok y el "
-               "actor de Instagram no están publicados por Scrapeless; por eso se ocultan.")
+    st.caption("Extracción real soportada: perfil de TikTok (`scraper.tiktok.user.detail` "
+               "`scraper.tiktok.user.work`, Scraping API) e Instagram (Scraping Browser/CDP + "
+               "API interna `web_profile_info`, sin login). La búsqueda por palabra clave "
+               "no está disponible.")
 
 def mostrar_configuracion_extraccion():
     """

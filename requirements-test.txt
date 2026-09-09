@@ -1,0 +1,14 @@
+# Dependencias para PRUEBAS técnicas independientes del proyecto.
+# Instalar en el venv:
+#   pip install -r requirements-test.txt
+
+# Prueba de conexión CDP/WebSocket a Scrapeless (test_instagram_cdp.py)
+#
+# IMPORTANTE: el navegador (Chromium) lo gestiona Scrapeless en el servidor,
+# por lo que NO se necesita `playwright install chromium` local para probar.
+# Si tu entorno exigiera un navegador local disponible, ejecuta:
+#   playwright install chromium
+# Y para entornos sin navegador local / contenedores, puedes forzar el modo
+# remoto puro con la variable de entorno:
+#   PLAYWRIGHT_BROWSERS_PATH=0
+playwright>=1.49.0

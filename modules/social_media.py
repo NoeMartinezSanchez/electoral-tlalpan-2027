@@ -265,7 +265,35 @@ def mostrar_dashboard_redes_sociales():
     Define los controles de filtrado y actualiza la visualización de analíticas.
     """
     st.markdown("<h2 style='font-size: 22px; font-weight: 700; margin-top: 10px; margin-bottom: 2px;'>📊 Dashboard de Redes Sociales</h2>", unsafe_allow_html=True)
-    st.caption("Monitoreo estadístico y semántico de datos reales extraídos de TikTok (Scrapeless)")
+    st.caption("Monitoreo estadístico y semántico de datos reales extraídos de TikTok "
+               "(Scraping API) e Instagram (API interna web_profile_info vía Scraping Browser)")
+
+    # 0.1 Badge y tarjeta del perfil de Instagram si la última extracción lo trajo
+    perfil_ig = st.session_state.get('perfil_instagram') if 'perfil_instagram' in st.session_state else None
+    if perfil_ig:
+        st.markdown('<span style="background:#c13584;color:#fff;padding:3px 10px;'
+                    'border-radius:9999px;font-size:12px;font-weight:600;">📸 Instagram · '
+                    'Extracción real</span>', unsafe_allow_html=True)
+        col_avatar, col_info = st.columns([1, 3])
+        with col_avatar:
+            avatar = perfil_ig.get('avatar_url')
+            if avatar:
+                try:
+                    st.image(avatar, width=70)
+                except Exception:
+                    st.markdown(f"**@{perfil_ig.get('usuario', '')}**")
+            else:
+                st.markdown(f"**@{perfil_ig.get('usuario', '')}**")
+        with col_info:
+            st.markdown(f"**{perfil_ig.get('nombre', '')}**  ·  {perfil_ig.get('usuario', '')}")
+            if perfil_ig.get('bio'):
+                st.markdown(f"_{perfil_ig['bio']}_")
+            seg = f"{perfil_ig.get('seguidores', 0):,}" if perfil_ig.get('seguidores_disponibles') else 'n/d'
+            sig = f"{perfil_ig.get('siguiendo', 0):,}" if perfil_ig.get('siguiendo_disponibles') else 'n/d'
+            st.caption(f"👥 {seg} seguidores · ➕ {sig} siguiendo · "
+                       f"📷 {perfil_ig.get('publicaciones', 0):,} publicaciones")
+        st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
+                    unsafe_allow_html=True)
 
     # 0. Panel de configuración de extracción real (Scrapeless)
     mostrar_configuracion_extraccion()
@@ -297,7 +325,7 @@ def mostrar_dashboard_redes_sociales():
     df_actual = st.session_state.posts_sociales.copy()
     if df_actual.empty:
         st.info("📭 Aún no hay datos. Ejecuta una extracción real con un @usuario de TikTok "
-                "en el panel de arriba para ver la analítica.")
+                "o de Instagram en el panel de arriba para ver la analítica.")
         return
     min_date = df_actual['fecha'].min().date()
     max_date = df_actual['fecha'].max().date()

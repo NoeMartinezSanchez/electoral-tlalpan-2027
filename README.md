@@ -34,7 +34,7 @@ analítica y exportación de resultados sin generación sintética.
 |---|---|
 | Python 3.9+ | Lenguaje base |
 | Streamlit | Frontend web responsivo (mobile-first) |
-| Pandas / NumPy | Generación y manejo de datos sintéticos |
+| Pandas / NumPy | Manejo y análisis de datos |
 | Folium + streamlit-folium | Mapas interactivos |
 | Hugging Face `transformers` | Clasificación zero-shot de quejas |
 | pytesseract / Tesseract | OCR de actas |
@@ -96,11 +96,10 @@ pública.
 
 ## 🚀 Extracción real de datos (Scrapeless)
 
-En la **Pestaña 2** puedes alternar entre **Modo demo (sintético)** y
-**🔴 Real (Scrapeless)**: el flujo real soportado descarga las publicaciones
-recientes de un **perfil de TikTok (@usuario)** —título, texto, hashtags y
-engagement (likes, comentarios, compartidos)— e integra los resultados a la
-analítica existente (KPIs, series, wordcloud, sentimiento, CSV).
+En la **Pestaña 2** se descargan las publicaciones recientes de un **perfil de
+TikTok (@usuario)** —texto, hashtags y engagement (likes, comentarios,
+compartidos, vistas, guardados)— e integra los resultados a la analítica
+existente (KPIs, series, wordcloud, sentimiento, CSV).
 
 > ⚠️ **Limitaciones del proveedor**: Scrapeless deprecó el actor de búsqueda
 > por palabra clave/hashtag de TikTok (`scraper.tiktok.search`) y **no publica
@@ -110,17 +109,12 @@ analítica existente (KPIs, series, wordcloud, sentimiento, CSV).
 
 ### Dónde pegar tu API Key de Scrapeless
 
-Puedes configurarla en dos lugares (tiene prioridad el archivo):
-
-1. **`.streamlit/secrets.toml`** (recomendado, no se sube a GitHub):
+Se lee **solo desde los Secrets** (no hay campo en la UI):
 
 ```toml
 [SCRAPELESS]
 API_KEY = "tu_api_key_real"
 ```
-
-2. En la app: Pestaña 2 → `🔴 Real (Scrapeless)` → campo `🔑 API Key de
-   Scrapeless` (se persiste solo durante la sesión).
 
 ### Configuración
 
@@ -172,7 +166,7 @@ electoral/
 │   ├── data.py                     # Secciones, CONFIG, simulación de visitas
 │   ├── nlp.py                      # Clasificación de quejas (zero-shot + reglas)
 │   ├── ocr.py                      # Procesamiento de actas (OCR + fallback)
-│   ├── scrapeless.py               # Cliente de la Scraping API (saldo, búsqueda, normalización)
+│   ├── scrapeless.py               # Cliente Scraping API (saldo, perfil TikTok, normalización)
 │   ├── social_media.py             # Dashboard de redes sociales (Pestaña 2)
 │   └── social_media_generator.py   # Generador de posts sintéticos
 ├── project-docs/                   # Especificación, contratos de datos y reglas

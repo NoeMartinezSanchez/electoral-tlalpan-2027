@@ -435,3 +435,12 @@ Incluir botón de exportación a CSV (opcional)
 Generar 500-1000 posts por actualización
 
 Los datos deben ser realistas y variados
+
+NOTA ACTUALIZADA (extracción real): la Pestaña 2 es real-only. NO generar posts
+sintéticos de redes sociales. Los datos llegan de Scrapeless:
+- TikTok: Scraping API sobre un perfil (`user.detail` + `user.work`).
+- Instagram: Scraping Browser (CDP) + API interna `web_profile_info`, sin login
+  de Instagram. Guardados/vistas no disponibles en sesión anónima (0).
+Resultados normalizados a las columnas de `COLUMNAS_POSTS` y guardados en
+`datos_extraidos/`. Todo nuevo flujo de extracción debe mantener manejo de
+errores (404/privado/401-403/429/login-wall/timeout) y docstrings en español.

@@ -177,3 +177,39 @@ text
 4. Presiona "Actualizar Datos" → se generan 500 nuevos posts
 5. Todas las visualizaciones se actualizan automáticamente
 6. Puede exportar datos a CSV
+
+## EXTRACCIÓN REAL (Scrapeless) — ESTADO ACTUAL
+La Pestaña 2 es **real-only**: los posts llegan de Scrapeless, no hay generación
+sintética de posts.
+
+### TikTok (Scraping API)
+- Actor `scraper.tiktok.user.detail` (resuelve `sec_uid`) + `scraper.tiktok.user.work`
+  (publicaciones del perfil con paginación `cursor`/`has_more`).
+- Endpoint REST `POST /api/v1/scraper/request` con cabecera `x-api-token`.
+- La búsqueda por palabra clave/hashtag de TikTok fue **deprecada** por Scrapeless
+  (no se usa).
+
+### Instagram (Scraping Browser + API interna)
+- Instagram **no usa actor**: se extrae con el **Scraping Browser** de Scrapeless.
+- Conexión WebSocket CDP: `wss://browser.scrapeless.com/api/v2/browser?token=...`.
+- Flujo dentro de la sesión del navegador remoto (Playwright `connect_over_cdp`):
+  1. Navegar a `https://www.instagram.com/` para acuñar cookies anónimas (csrftoken/mid).
+  2. `fetch` same-origin a la API interna
+     `/api/v1/users/web_profile_info/?username={usuario}` con `credentials: 'include'`,
+     cabecera `X-IG-App-Id: 936619743392459` y doble sumisión CSRF (cabecera
+     `X-CSRFToken` igual a la cookie `csrftoken`).
+  3. El JSON devuelve perfil (`full_name`, `biography`, `follower_count`,
+     `following_count`, `is_private`) y la grilla de la primera página
+     (`edge_owner_to_timeline_media.edges`).
+- **No requiere login de Instagram**: solo la API Key de Scrapeless.
+- Limitaciones conocidas: `follower_count`/`following_count` pueden venir en 0 en
+  sesión anónima (se muestra "no disponible"); `guardados` no está disponible sin
+  autenticación (0); la primera página trae ~12 posts (más páginas requieren
+  GraphQL, fuertemente rate-limitado en sesión anónima).
+- Resultados guardados en `datos_extraidos/` como
+  `posts_instagram_{usuario}_{timestamp}.csv` (+ `raw_instagram_*.json`).
+
+### Manejo de errores
+Perfil no encontrado (404), perfil privado, 401/403 (autenticación/bloqueo), 429
+(rate limit), redirección a login (login-wall) y timeout — todos devuelven mensajes
+claros en la UI sin romper la aplicación.
