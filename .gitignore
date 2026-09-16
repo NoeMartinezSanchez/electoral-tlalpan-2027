@@ -48,3 +48,6 @@ datos_extraidos/
 # Archivos locales (no subir a GitHub)
 notas.txt
 AGENTS.md
+
+# Datos de ejemplo de carga manual (Instant Data Scraper)
+documentos/

@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 
+import pandas as pd
 import streamlit as st
 
 from modules.auth import validar_credenciales
@@ -449,9 +450,140 @@ def _render_resultado_extraccion():
                                mime='application/json', use_container_width=True,
                                key="btn_descargar_json_extraccion")
 
+COLUMNAS_POSTS_UI = [
+    'id_post', 'red_social', 'usuario', 'fecha', 'texto', 'hashtags', 'likes',
+    'comentarios', 'compartidos', 'vistas', 'guardados', 'sentimiento',
+    'tema_electoral', 'engagement', 'engagement_rate'
+]
+
+
+def _df_posts_vacio_ui() -> pd.DataFrame:
+    """DataFrame vacío con el esquema de posts del dashboard (para reseteo)."""
+    return pd.DataFrame(columns=COLUMNAS_POSTS_UI)
+
+
+def _mostrar_carga_manual_csv():
+    """
+    Panel del modo manual: subida de CSVs de Facebook e Instagram (Instant Data
+    Scraper), botón de procesado (anexa a los datos existentes) y de limpieza.
+    """
+    st.markdown("### 📁 Carga manual de CSVs (Instant Data Scraper)")
+    st.caption("Sube los CSVs exportados con la extensión Instant Data Scraper. "
+               "Se detecta el formato automáticamente y los posts se anexan a "
+               "los datos de TikTok/X ya cargados en el dashboard.")
+    col_fb, col_ig = st.columns(2)
+    with col_fb:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        st.markdown("**📘 Facebook**")
+        st.file_uploader("CSV de Facebook (Instant Data Scraper)",
+                         type=["csv"], key="manual_fb_csv")
+        st.caption("Sin fecha en el CSV → los posts se muestran como 'Sin fecha'.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with col_ig:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        st.markdown("**📷 Instagram**")
+        st.file_uploader("CSV de Instagram (Instant Data Scraper)",
+                         type=["csv"], key="manual_ig_csv")
+        st.caption("La fecha relativa ('7 h', '1 d') se convierte a absoluta.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    col_acc, col_lim = st.columns([3, 1])
+    with col_acc:
+        if st.button("📁 Procesar CSVs", use_container_width=True):
+            _procesar_csvs_manuales()
+    with col_lim:
+        if st.button("🧹 Limpiar datos", use_container_width=True):
+            st.session_state.posts_sociales = _df_posts_vacio_ui()
+            st.session_state['estado_extraccion'] = ('ok',
+                "🧹 Se limpiaron los datos del dashboard. Vuelve a extraer o subir CSVs.")
+            st.rerun()
+
+    _render_resultado_extraccion()
+
+
+def _procesar_csvs_manuales():
+    """
+    Procesa los CSVs manuales de Facebook/Instagram: detecta tipo, limpia,
+    normaliza al esquema del dashboard y ANEXA a los posts ya cargados
+    (TikTok/X) en session_state. Guarda los CSVs normalizados en
+    `datos_extraidos/` y publica el estado de la operación.
+    """
+    fb_file = st.session_state.get('manual_fb_csv')
+    ig_file = st.session_state.get('manual_ig_csv')
+    if not fb_file and not ig_file:
+        st.session_state['estado_extraccion'] = ('aviso',
+            "📁 Sube al menos un CSV (Facebook o Instagram) para procesar.")
+        return
+
+    from modules.manual_csv import procesar_archivos
+
+    with st.spinner("Procesando CSVs de carga manual (Facebook/Instagram)..."):
+        resultado = procesar_archivos(fb=fb_file, ig=ig_file)
+
+    frames_nuevos = []
+    guardados = {}
+    for red, dfred in (('Facebook', resultado.get('fb')), ('Instagram', resultado.get('ig'))):
+        if dfred is not None and not dfred.empty:
+            frames_nuevos.append(dfred)
+            guardados[red] = _guardar_resultados(dfred, [], 'manual', red_social=red)
+
+    if not frames_nuevos:
+        motivo = '; '.join(resultado['errores']) or 'No se pudo procesar ningún CSV.'
+        st.session_state['estado_extraccion'] = ('error',
+            f"Fallo al procesar los CSVs: {motivo}")
+        st.rerun()
+        return
+
+    df_nuevo = pd.concat(frames_nuevos, ignore_index=True)
+    previo = st.session_state.get('posts_sociales')
+    if previo is not None and isinstance(previo, pd.DataFrame) and not previo.empty:
+        df_total = pd.concat([previo, df_nuevo], ignore_index=True)
+    else:
+        df_total = df_nuevo
+
+    st.session_state.posts_sociales = df_total
+    st.session_state.posts_origen = 'manual'
+    st.session_state.fecha_extraccion = datetime.now()
+
+    resumen = (f"✅ Procesados {len(resultado['fb'])} posts de Facebook, "
+               f"{len(resultado['ig'])} de Instagram "
+               f"(total en dashboard: {len(df_total)}).")
+    if resultado['errores']:
+        resumen += " ⚠️ " + ' | '.join(resultado['errores'])
+    if resultado['avisos']:
+        resumen += " I " + ' | '.join(resultado['avisos'])
+
+    primer_guardado = next(iter(guardados.values()), None) if guardados else None
+    st.session_state.ultima_extraccion = {
+        'usuario': 'manual',
+        'n_items': len(df_nuevo),
+        'csv_bytes': (primer_guardado or {}).get('csv_bytes') or df_nuevo.to_csv(index=False, encoding='utf-8-sig').encode('utf-8'),
+        'json_bytes': b'{}',
+        'csv_path': next(iter(guardados.values()), {}).get('csv_path', ''),
+        'json_path': next(iter(guardados.values()), {}).get('json_path', ''),
+    }
+    st.session_state['estado_extraccion'] = ('ok', resumen)
+    st.toast("📁 CSVs de carga manual procesados", icon="📁")
+    st.rerun()
+
+
 def _mostrar_config_real():
-    """Panel de configuración para el modo Real (Scrapeless)."""
+    """Panel de configuración para el modo Real (Scrapeless) y CSV manual."""
     _render_estado_extraccion()
+
+    st.radio(
+        "Modo de datos:",
+        options=["🔌 Scrapeless (TikTok + X)", "📁 CSV manual (Facebook/Instagram)"],
+        key='modo_datos',
+        horizontal=True,
+        help="Scrapeless descarga TikTok/X vía API. El modo manual procesa los "
+             "CSVs de la extensión Instant Data Scraper (Facebook/Instagram) y "
+             "los anexa a los datos ya cargados.",
+    )
+    if st.session_state.get('modo_datos') == '📁 CSV manual (Facebook/Instagram)':
+        _mostrar_carga_manual_csv()
+        return
+
     col_sal, col_ver = st.columns([3, 1])
     with col_sal:
         balance = st.session_state.get('scrapeless_balance')

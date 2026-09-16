@@ -80,6 +80,14 @@ def mostrar_evolucion_temporal(df):
     if df.empty:
         st.info("No hay datos suficientes para el rango seleccionado.")
         return
+    # Posts sin fecha (Facebook manual) no entran en la serie temporal
+    df = df[df['fecha'].notna()]
+    if df.empty:
+        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
+                "pueden graficar en la serie temporal.")
+        return
+    st.caption("Los posts de Facebook (carga manual, sin fecha) no se incluyen "
+               "en la serie temporal.")
         
     df_daily = df.groupby(df['fecha'].dt.date).agg({
         'likes': 'sum',
@@ -187,6 +195,12 @@ def mostrar_sentimiento_temporal(df):
     if df.empty:
         st.info("Sin datos de sentimientos en el rango seleccionado.")
         return
+    # Posts sin fecha (Facebook manual) se excluyen del análisis temporal
+    df = df[df['fecha'].notna()]
+    if df.empty:
+        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
+                "pueden graficar en la tendencia de sentimiento.")
+        return
         
     # Agrupar por día y sentimiento
     df_sentiment = df.groupby([df['fecha'].dt.date, 'sentimiento']).size().reset_index(name='count')
@@ -251,10 +265,15 @@ def mostrar_ultimos_posts(df, n=10):
         return
         
     df_mostrar = df[['fecha', 'red_social', 'usuario', 'texto', 'likes', 'comentarios', 'sentimiento']].copy()
-    df_mostrar['fecha'] = df_mostrar['fecha'].dt.strftime('%Y-%m-%d %H:%M')
-    
+    # Posts sin fecha (Facebook manual) -> "Sin fecha"; se ordenan al final
+    df_mostrar['fecha_etiqueta'] = df_mostrar['fecha'].dt.strftime('%Y-%m-%d %H:%M').fillna('Sin fecha')
+    df_mostrar = df_mostrar.sort_values(
+        by='fecha', ascending=False, na_position='last')
+    df_mostrar['fecha'] = df_mostrar['fecha_etiqueta']
+    df_mostrar = df_mostrar.drop(columns=['fecha_etiqueta'])
+
     st.dataframe(
-        df_mostrar.sort_values(by='fecha', ascending=False).head(n),
+        df_mostrar.head(n),
         use_container_width=True,
         hide_index=True
     )
@@ -265,11 +284,28 @@ def mostrar_dashboard_redes_sociales():
     Define los controles de filtrado y actualiza la visualización de analíticas.
     """
     st.markdown("<h2 style='font-size: 22px; font-weight: 700; margin-top: 10px; margin-bottom: 2px;'>📊 Dashboard de Redes Sociales</h2>", unsafe_allow_html=True)
-    st.caption("Monitoreo estadístico y semántico de datos reales: TikTok (Scraping API) "
-               "y X/Twitter (actor AI scraper.grok)")
+    st.caption("Monitoreo estadístico y semántico de datos reales: TikTok (Scraping API), "
+               "X/Twitter (actor AI scraper.grok) y Facebook/Instagram (carga manual de "
+               "CSV con Instant Data Scraper)")
+
+    # 0.0 Badge de carga manual si hay posts de Facebook/Instagram o si el origen
+    # fue la carga manual de CSVs
+    df_session = st.session_state.get('posts_sociales')
+    origen_manual = st.session_state.get('posts_origen') == 'manual'
+    hay_manual = df_session is not None and not df_session.empty \
+        and 'red_social' in df_session.columns \
+        and df_session['red_social'].isin(['Facebook', 'Instagram']).any()
+    if origen_manual or hay_manual:
+        st.markdown('<span style="background:#6b7280;color:#fff;padding:3px 10px;'
+                    'border-radius:9999px;font-size:12px;font-weight:600;">📁 Carga '
+                    'manual (Facebook/Instagram)</span>', unsafe_allow_html=True)
+        st.caption("Posts de Facebook/Instagram subidos con Instant Data Scraper. "
+                   "Los de Facebook no tienen fecha (se ven como 'Sin fecha'); "
+                   "Instagram usa fecha relativa convertida a absoluta.")
+        st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
+                    unsafe_allow_html=True)
 
     # 0.1 Badge de X/Twitter si ya hay posts de X en los datos cargados
-    df_session = st.session_state.get('posts_sociales')
     if df_session is not None and not df_session.empty \
             and 'red_social' in df_session.columns \
             and (df_session['red_social'] == 'X').any():
@@ -281,7 +317,7 @@ def mostrar_dashboard_redes_sociales():
         st.markdown("<hr style='margin: 10px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
                     unsafe_allow_html=True)
 
-    # 0. Panel de configuración de extracción real (Scrapeless)
+    # 0. Panel de configuración de extracción real / carga manual (Scrapeless)
     mostrar_configuracion_extraccion()
 
     # 1. Inicializar posts en session_state (vacío hasta la primera extracción)
@@ -294,7 +330,7 @@ def mostrar_dashboard_redes_sociales():
     with col_control1:
         red_seleccionada = st.selectbox(
             "Filtrar por Red Social:",
-            ["Todas", "TikTok", "X"],
+            ["Todas", "TikTok", "X", "Facebook", "Instagram"],
             key="filtro_red_social"
         )
     with col_control2:
@@ -311,20 +347,29 @@ def mostrar_dashboard_redes_sociales():
     df_actual = st.session_state.posts_sociales.copy()
     if df_actual.empty:
         st.info("📭 Aún no hay datos. Ejecuta una extracción real con un @usuario de TikTok "
-                "o de X en el panel de arriba.")
+                "o de X, o sube CSVs de Facebook/Instagram en el modo 'CSV manual'.")
         return
-    min_date = df_actual['fecha'].min().date()
-    max_date = df_actual['fecha'].max().date()
-    
+    # Fechas válidas (los posts manuales de Facebook no tienen fecha -> NaT)
+    fechas_validas = df_actual['fecha'].dropna()
+    if fechas_validas.empty:
+        rango_fechas = None
+    else:
+        min_date = fechas_validas.min().date()
+        max_date = fechas_validas.max().date()
+
     col_sub1, col_sub2 = st.columns([3, 1])
     with col_sub1:
-        rango_fechas = st.date_input(
-            "Filtrar por Rango de Fechas:",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="filtro_fechas"
-        )
+        if rango_fechas is None:
+            st.caption("🗓️ No hay fechas en los datos (posts de Facebook manuales "
+                       "sin fecha). No se aplica filtro de rango.")
+        else:
+            rango_fechas = st.date_input(
+                "Filtrar por Rango de Fechas:",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                key="filtro_fechas"
+            )
     with col_sub2:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         # Preparar descarga de CSV
@@ -348,9 +393,15 @@ def mostrar_dashboard_redes_sociales():
         
     if isinstance(rango_fechas, (tuple, list)) and len(rango_fechas) == 2:
         start_date, end_date = rango_fechas
+        fecha_valida = df_filtrado['fecha'].notna()
+        # Las filas sin fecha (Facebook manual) SIEMPRE se conservan; el rango
+        # solo restringe las filas que sí tienen fecha.
         df_filtrado = df_filtrado[
-            (df_filtrado['fecha'].dt.date >= start_date) & 
-            (df_filtrado['fecha'].dt.date <= end_date)
+            (~fecha_valida) | (
+                (fecha_valida) &
+                (df_filtrado['fecha'].dt.date >= start_date) &
+                (df_filtrado['fecha'].dt.date <= end_date)
+            )
         ]
 
     st.markdown("<hr style='margin: 15px 0; border: 0; border-top: 1px solid #e2e8f0;'>", unsafe_allow_html=True)
