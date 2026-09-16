@@ -206,6 +206,11 @@ sintética de posts.
   sesión anónima (se muestra "no disponible"); `guardados` no está disponible sin
   autenticación (0); la primera página trae ~12 posts (más páginas requieren
   GraphQL, fuertemente rate-limitado en sesión anónima).
+- **Bloqueo anónimo de Meta (2026)**: desde egress de datacenter, Instagram responde
+  `401 require_login` a `web_profile_info` **sin cabeceras de rate-limit** (no es un
+  throttle por IP, así que rotar de país no ayuda). La extracción hace un solo
+  intento CDP (sin auto-reintento para no gastar créditos) usando el modo
+  integrado `proxyCountry=MX` del Scraping Browser.
 - Resultados guardados en `datos_extraidos/` como
   `posts_instagram_{usuario}_{timestamp}.csv` (+ `raw_instagram_*.json`).
 
@@ -225,6 +230,23 @@ sintética de posts.
 - Desduplicación por `post_id` + hash de texto; no se filtra por `user_name`
   porque Grok puede citar el handle real del perfil (diferente al consultado).
 - Resultados en `datos_extraidos/` como `posts_x_{usuario}_{timestamp}.csv`.
+
+### Facebook (Scraping Browser + JSON de hidratación de Relay)
+- Facebook usa React (Relay) y clases CSS ofuscadas/rotativas; el target estable es
+  el **JSON de hidratación** incrustado en `<script type="application/json">`
+  durante el render (BigPipe).
+- Flujo: navegar a `https://www.facebook.com/{pagina}/posts` (fallback `/{pagina}/`)
+  en el Scraping Browser (`proxyCountry=MX`), esperar la hidratación de Relay,
+  cerrar modales de consentimiento/login best-effort, y extraer `page.content()`.
+- Parseo por walker de `__typename`: `User` → metadatos de la Página (nombre, id,
+  avatar, seguidores); `Story` → posts (message/creation_time/attachments/
+  `Feedback`). Fuentes auxiliares: JSON-LD (`application/ld+json`) y OpenGraph.
+- Limitaciones conocidas: conteos de reacciones/comentarios/compartidos pueden
+  NO venir en sesión anónima (se fijan en 0); el scroll profundo o IPs de
+  datacenter pueden disparar muro de login (se reporta como error claro de Meta,
+  no como bug); el esquema cambia con los deploys → parseo best-effort.
+- Sin scroll (12 posts de la primera tanda) y sin reintentos automáticos.
+- Resultados en `datos_extraidos/` como `posts_facebook_{pagina}_{timestamp}.csv`.
 
 ### Manejo de errores
 Perfil no encontrado (404), perfil privado, 401/403 (autenticación/bloqueo), 429

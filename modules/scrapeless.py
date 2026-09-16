@@ -38,6 +38,17 @@ X_MODE_DEFAULT = 'MODEL_MODE_FAST'   # también válidos: AUTO y EXPERT
 COSTO_GROK = 0.15                    # costo estimado por prompt de Grok (USD)
 TIMEOUT_GROK = 120                   # Grok tarda ~16-60 s en responder
 
+# Extracción de Facebook (Scraping Browser + JSON de hidratación de Relay).
+# Los datos públicos de una Página se incrustan en <script type="application/json">
+# durante el render (BigPipe/Relay). El discriminador estable es `__typename`
+# (`User` para la página, `Story` para los posts), no las clases CSS rotativas.
+URL_FB_BASE = 'https://www.facebook.com'
+TIMEOUT_FB_NAVEGAR = 25             # timeout para cada navegación
+TIMEOUT_FB_ESTABILIZAR = 8          # espera a que hydrate el JSON (Relay)
+FB_TIPOS_PAGINA = {'User'}
+FB_TIPOS_POST = {'Story'}
+LIMITE_FB_PRIMERA_TANDA = 12        # primera carga, sin scroll
+
 # Scraping Browser (WebSocket CDP) para extracción de Instagram
 ENDPOINT_BROWSER = 'wss://browser.scrapeless.com/api/v2/browser'
 SESSION_TTL = 60            # duración de la sesión del navegador en segundos
@@ -368,7 +379,8 @@ async (arg) => {
 
 def _url_browser(api_key: str, pais: str = PROXY_COUNTRY) -> str:
     """
-    Construye la URL de conexión WebSocket del Scraping Browser de Scrapeless.
+    Construye la URL de conexión WebSocket del Scraping Browser de Scrapeless
+    usando el modo integrado con `proxyCountry` (sin proxy personalizado).
 
     Retorna:
         str con la URL CDP incluyendo token, sessionTTL y proxyCountry.
@@ -434,6 +446,12 @@ def _mensaje_instagram_http(status: int, body) -> str:
     ejemplo `require_login` o "Please wait a few minutes..."). Distingue el muro
     de login/rate-limit de Instagram de un fallo de autenticación genérico.
 
+    Nota observada en pruebas reales: el 401 con `require_login` (+ mensaje
+    "Please wait a few minutes") NO lleva cabeceras de rate-limit (retry-after,
+    x-fb-rlafr, x-ratelimit-*). Por eso NO es un throttling clásico por IP: es
+    el cierre fail-closed de Instagram sobre sesiones anónimas desde egress de
+    datacenter. El mensaje se redacta pensando en esa causa real.
+
     Retorna:
         str con el mensaje en español.
     """
@@ -447,8 +465,10 @@ def _mensaje_instagram_http(status: int, body) -> str:
         if isinstance(info, dict):
             if info.get('require_login') or 'wait a few minutes' in (
                     info.get('message') or '').lower():
-                motivo = ('Instagram bloqueó la sesión anónima y pide esperar unos '
-                          'minutos antes de reintentar.')
+                motivo = ('Instagram rechazó la sesión anónima (require_login) para '
+                          'web_profile_info desde este proveedor/IP (egress de '
+                          'datacenter). La extracción anónima de Instagram no está '
+                          'disponible desde este egress; reintenta más tarde.')
             elif info.get('message'):
                 motivo = f"Instagram: {info['message']}"
     if status == 429:
@@ -553,8 +573,9 @@ async def _intento_perfil_ig(usuario: str, limite: int, api_key: str,
     """
     Un solo intento de sesión CDP: conecta al Scraping Browser, siembra las
     cookies anónimas navegando a instagram.com y hace fetch a la API interna
-    `web_profile_info`. Cierra SIEMPRE la sesión en `finally` para no dejar
-    navegadores colgados (cuestan créditos por TTL).
+    `web_profile_info`. Usa el modo integrado `proxyCountry` (por defecto MX).
+    Cierra SIEMPRE la sesión en `finally` para no dejar navegadores colgados
+    (cuestan créditos por TTL).
 
     Retorna:
         dict idéntico al de `_interpretar_resultado_ig` (success/profile/posts/
@@ -566,7 +587,8 @@ async def _intento_perfil_ig(usuario: str, limite: int, api_key: str,
     aurora = None
     try:
         aurora = await async_playwright().start()
-        browser = await aurora.chromium.connect_over_cdp(_url_browser(api_key, pais))
+        browser = await aurora.chromium.connect_over_cdp(
+            _url_browser(api_key, pais))
         contextos = browser.contexts
         if contextos:
             contexto = contextos[0]
@@ -617,26 +639,19 @@ async def _intento_perfil_ig(usuario: str, limite: int, api_key: str,
 
 async def _extraer_perfil_ig_async(usuario: str, limite: int, api_key: str) -> dict:
     """
-    Orquesta la extracción de Instagram con reintento ante bloqueos temporales
-    de la sesión anónima/IP: si Instagram responde 401/403/429 (require_login,
-    rate limit), se reintenta una vez con otra IP de salida (proxyCountry) antes
-    de reportar el error. No requiere login de Instagram.
+    Orquesta la extracción de Instagram con un único intento de sesión CDP, usando
+    el modo integrado `proxyCountry` (por defecto MX).
+
+    IMPORTANTE: se eliminó el auto-reintento con otra IP de salida (MX→US) porque
+    las pruebas reales mostraron que el 401 `require_login` de Instagram NO lleva
+    cabeceras de rate-limit: es un cierre fail-closed de la sesión anónima desde
+    egress de datacenter, no un throttle por IP que rote. Reintentar solo gasta
+    créditos. No se usa proxy personalizado (`proxyURL`).
 
     Retorna:
         dict con 'success', 'profile', 'posts' y 'error'.
     """
-    paises = [PROXY_COUNTRY, 'US']
-    resultado = {'success': False, 'profile': None, 'posts': [],
-                 'error': 'Sin intentos de extracción realizados'}
-    for intento, pais in enumerate(paises):
-        resultado = await _intento_perfil_ig(usuario, limite, api_key, pais=pais)
-        if resultado.get('reintentar') and intento < len(paises) - 1:
-            print(f'SCRAPELESS: Instagram - bloqueo temporal con proxy {pais}, '
-                  f'reintentando con otra IP...')
-            await asyncio.sleep(3)
-            continue
-        resultado.pop('reintentar', None)
-        return resultado
+    resultado = await _intento_perfil_ig(usuario, limite, api_key)
     resultado.pop('reintentar', None)
     return resultado
 
@@ -842,22 +857,394 @@ def extraer_posts_x(usuario: str, limite: int = 20,
     return {'success': True, 'posts': items, 'error': None}
 
 
+# --- Extracción de Facebook (Scraping Browser + Hydration JSON) -------------
+
+def _extraer_scripts_json(html: str) -> list:
+    """
+    Extrae todos los bloques `application/json` de la página (JSON de hidratación
+    de Relay/BigPipe). Facebook escapa `</script>` como `\\u003c`, por lo que el
+    regex no se corta prematuramente.
+
+    Retorna:
+        lista con los objetos JSON parseados (los inválidos se omiten).
+    """
+    if not html:
+        return []
+    bloques = re.findall(r'<script type="application/json"[^>]*>(.*?)</script>',
+                         html, re.DOTALL)
+    objetos = []
+    for bloque in bloques:
+        try:
+            objetos.append(json.loads(bloque))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return objetos
+
+
+def _buscar_por_typename(obj, tipos: set) -> list:
+    """
+    Recorre recursivamente una estructura JSON (dicts/listas) y colecciona todo
+    objeto cuyo `__typename` esté en `tipos`. Facebook rota las clases CSS, pero
+    el discriminador `__typename` es estable; este walker tolera cambios de
+    esquema en la ubicación de los nodos.
+
+    Retorna:
+        lista de dicts con __typename en `tipos`.
+    """
+    encontrados = []
+    if isinstance(obj, dict):
+        if isinstance(obj.get('__typename'), str) and obj['__typename'] in tipos:
+            encontrados.append(obj)
+        for valor in obj.values():
+            encontrados.extend(_buscar_por_typename(valor, tipos))
+    elif isinstance(obj, list):
+        for elemento in obj:
+            encontrados.extend(_buscar_por_typename(elemento, tipos))
+    return encontrados
+
+
+def _buscar_datos_pagina_fb(html: str) -> dict:
+    """
+    Extrae los metadatos de la Página de Facebook:
+    1) JSON-LD (`application/ld+json`, tipos Organization/LocalBusiness).
+    2) Nodos `User` del JSON de hidratación (nombre, id, avatar, seguidores).
+
+    Retorna:
+        dict con 'nombre', 'seguidores', 'avatar_url', 'id' y 'slug'.
+    """
+    perfil = {}
+    # Capa 1: JSON-LD (estable, esquema-driven)
+    for bloque in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>',
+                             html or '', re.DOTALL):
+        try:
+            ld = json.loads(bloque)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        candidatos = [ld] if isinstance(ld, dict) else ld
+        for item in candidatos:
+            if not isinstance(item, dict):
+                continue
+            if item.get('@type') in ('Organization', 'LocalBusiness', 'Corporation'):
+                perfil.setdefault('nombre', item.get('name'))
+                perfil.setdefault('avatar_url', item.get('image')
+                                  if isinstance(item.get('image'), str) else None)
+                perfil.setdefault('descripcion', item.get('description'))
+    # Capa 2: nodos User del hydration JSON
+    for script in _extraer_scripts_json(html):
+        for user in _buscar_por_typename(script, FB_TIPOS_PAGINA):
+            nombre = user.get('name')
+            if nombre and not perfil.get('nombre'):
+                perfil['nombre'] = nombre
+            perfil.setdefault('id', user.get('id'))
+            avatar = user.get('profile_picture')
+            if avatar and not perfil.get('avatar_url'):
+                perfil['avatar_url'] = avatar
+            # Contadores de seguidores en varios nombres de campo posibles
+            for clave in ('follower_count', 'global_follow_count',
+                          'global_following_count', 'follower_count_social'):
+                valor = user.get(clave)
+                if valor:
+                    perfil.setdefault('seguidores', valor)
+                    break
+    return perfil
+
+
+def _texto_story_fb(story: dict) -> str:
+    """Texto del post (message/short_message/título) de un nodo Story."""
+    for clave in ('message', 'short_message', 'title', 'caption'):
+        valor = story.get(clave)
+        if isinstance(valor, dict):
+            valor = valor.get('text') or valor.get('title') or ''
+        if valor:
+            return valor
+    return ''
+
+
+def _feedback_fb(story: dict) -> dict:
+    """
+    Lee el objeto Feedback de un Story (likes/comentarios/compartidos). En sesión
+    anónima estos conteos PUEDEN NO venir (Facebook los sirve por llamada
+    autenticada); se devuelven 0 cuando no están disponibles.
+    """
+    feedback = story.get('feedback') or story.get('feedback_typing') or {}
+    if not isinstance(feedback, dict):
+        return {'like_count': 0, 'comment_count': 0, 'share_count': 0}
+    likes = 0
+    likers = feedback.get('likers') or {}
+    if isinstance(likers, dict):
+        likes = ((likers.get('count') or likers.get('total_count'))
+                 or ((likers.get('summary') or {}).get('total_count')) or 0)
+    reacciones = feedback.get('reaction_count') or {}
+    if isinstance(reacciones, dict):
+        likes = likes or reacciones.get('count') or 0
+    comentarios = (feedback.get('top_level_comment_count')
+                   or (feedback.get('total_comment_count'))
+                   or feedback.get('comment_count') or 0)
+    compartidos = (feedback.get('share_count') or feedback.get('shares') or 0)
+    if isinstance(compartidos, dict):
+        compartidos = compartidos.get('count') or 0
+    return {'like_count': int(likes or 0),
+            'comment_count': int(comentarios or 0),
+            'share_count': int(compartidos or 0)}
+
+
+def _imagenes_story_fb(story: dict) -> list:
+    """URLs de imagen/video del post (attachments y media), best-effort."""
+    urls = []
+    attachments = story.get('attachments') or []
+    if isinstance(attachments, dict):
+        attachments = attachments.get('nodes') or []
+    for attach in attachments or []:
+        media = attach.get('media') or attach.get('target') or {}
+        if isinstance(media, dict):
+            if media.get('image'):
+                urls.append(media['image'])
+            elif media.get('image_list'):
+                urls.extend([img for img in media['image_list'] if isinstance(img, str)])
+            elif media.get('playable_url'):
+                urls.append(media['playable_url'])
+        elif isinstance(media, str):
+            urls.append(media)
+    if not urls:
+        og = story.get('image') or story.get('thumbnail')
+        if og:
+            urls.append(og)
+    return urls
+
+
+def _item_facebook(story: dict, pagina: str) -> dict:
+    """
+    Mapea un nodo Story de Facebook al esquema de item que entiende
+    `normalizar_posts` para la red 'Facebook' (mismas llaves: caption/username/
+    timestamp/like_count/comment_count/share_count). Engagement ausente -> 0.
+
+    Retorna:
+        dict normalizable (item de un post de Facebook).
+    """
+    feedback = _feedback_fb(story)
+    texto = _texto_story_fb(story)
+    post_id = (story.get('post_id') or story.get('nodeID')
+               or story.get('id') or story.get('deduplication_key'))
+    url = story.get('url') or ''
+    if not url and story.get('post_location'):
+        direccion = story['post_location']
+        if isinstance(direccion, dict):
+            url = (direccion.get('url') or direccion.get('timeline_app_uri') or '')
+    if not post_id and url:
+        # El id numérico suele ir al final del permalink
+        segmento = str(url).rstrip('/').split('/')[-1]
+        if segmento.isdigit():
+            post_id = segmento
+    return {
+        'post_id': str(post_id).replace('story_fbid=', '') if post_id else None,
+        'caption': texto,
+        'text': texto,
+        'username': str(pagina).lstrip('@').split('/')[-1] or str(pagina),
+        'timestamp': story.get('creation_time') or story.get('publish_time'),
+        'like_count': feedback['like_count'],
+        'comment_count': feedback['comment_count'],
+        'share_count': feedback['share_count'],
+        'vistas': 0,
+        'guardados': 0,
+        'hashtags': extraer_hashtags(texto),
+        'imagenes': _imagenes_story_fb(story),
+        'url': url,
+    }
+
+
+def _detectar_barrera_fb(html: str, url_final: str) -> Optional[str]:
+    """
+    Detecta barreras de acceso en la respuesta de Facebook y devuelve el mensaje
+    de error correspondiente (None si la página es accesible). Orden de
+    detección: login-wall, página inexistente, contenido no público.
+
+    Retorna:
+        str con el error o None.
+    """
+    bajo = (html or '')[:400_000].lower()
+    if re.search(r'/login|/checkpoint', url_final or ''):
+        return 'Facebook requiere autenticación para esta página'
+    if (('you must log in' in bajo or 'logueate para continuar' in bajo
+         or 'inicia sesión para continuar' in bajo or 'log in to continue' in bajo)):
+        return 'Facebook requiere autenticación para esta página'
+    if (('page not found' in bajo or 'página no encontrada' in bajo
+         or 'la página que buscaste no existe' in bajo
+         or 'esta página no está disponible' in bajo)):
+        return 'Página de Facebook no encontrada'
+    if ("this content isn't available" in bajo or 'este contenido no está disponible' in bajo
+            or 'content currently unavailable' in bajo or 'contenido no disponible' in bajo):
+        return 'Contenido no accesible públicamente'
+    return None
+
+
+async def _cerrar_modales_fb(pagina) -> None:
+    """
+    Intenta cerrar los diálogos promocionales/consentimiento (best-effort):
+    botones con aria-label Close/Cerrar dentro de role=dialog, y el botón de
+    aceptar cookies si aparece. Nunca lanza: solo mejora la captura.
+    """
+    try:
+        selectores = [
+            '[role="dialog"] [aria-label*="Close" i]',
+            '[role="dialog"] [aria-label*="Cerrar" i]',
+            'div[aria-label="Close"]',
+            'div[aria-label*="accept" i] button',
+            '[aria-label*="Aceptar" i]',
+        ]
+        for selector in selectores:
+            try:
+                boton = await pagina.query_selector(selector)
+                if boton:
+                    await boton.click()
+                    await pagina.wait_for_timeout(800)
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+async def _intento_pagina_fb(pagina: str, api_key: str, limite: int) -> dict:
+    """
+    Un solo intento de sesión CDP para una Página pública de Facebook: navega a
+    `/{pagina}/posts` (fallback `/{pagina}/`), espera la hidratación de Relay,
+    cierra modales best-effort y extrae el HTML renderizado. Sin scroll (12
+    posts de la primera tanda; el scroll profundo dispara muro de login).
+    Cierra SIEMPRE la sesión en `finally`.
+    """
+    from playwright.async_api import async_playwright
+
+    browser = None
+    aurora = None
+    try:
+        aurora = await async_playwright().start()
+        browser = await aurora.chromium.connect_over_cdp(_url_browser(api_key))
+        contextos = browser.contexts
+        if contextos:
+            contexto = contextos[0]
+            pagina_web = contexto.pages[0] if contexto.pages else await contexto.new_page()
+        else:
+            contexto = await browser.new_context()
+            pagina_web = await contexto.new_page()
+
+        html = ''
+        posts = []
+        url_objetivo = f'{URL_FB_BASE}/{pagina}/posts'
+        urls = [url_objetivo, f'{URL_FB_BASE}/{pagina}/']
+        for url in urls:
+            try:
+                await asyncio.wait_for(
+                    pagina_web.goto(url, wait_until='domcontentloaded'),
+                    TIMEOUT_FB_NAVEGAR)
+                # Espera a que termine la hidratación de Relay (población del JSON)
+                await pagina_web.wait_for_timeout(TIMEOUT_FB_ESTABILIZAR * 1000)
+                await _cerrar_modales_fb(pagina_web)
+                html = await pagina_web.content()
+                posts = _buscar_posts_fb(html)
+                if posts:
+                    break
+            except Exception as e:
+                print(f'SCRAPELESS: Facebook {url} con advertencia: {e}')
+        if not html:
+            return {'success': False, 'profile': None, 'posts': [],
+                    'error': 'No se pudo extraer datos - estructura de página no reconocida'}
+        barrera = _detectar_barrera_fb(html, pagina_web.url)
+        if barrera:
+            return {'success': False, 'profile': None, 'posts': [], 'error': barrera}
+        if not posts:
+            return {'success': False, 'profile': None, 'posts': [],
+                    'error': 'No se pudo extraer datos - estructura de página no reconocida'}
+        perfil = _buscar_datos_pagina_fb(html)
+        perfil.setdefault('slug', pagina)
+        return {'success': True, 'profile': perfil,
+                'posts': [_item_facebook(p, pagina) for p in posts][:int(limite)],
+                'error': None}
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if aurora:
+            try:
+                await aurora.stop()
+            except Exception:
+                pass
+
+
+def _buscar_posts_fb(html: str) -> list:
+    """
+    Busca nodos `Story` en el JSON de hidratación (walker por __typename) y los
+    filtro: solo stories con texto o media para evitar ruido (compartidas,
+    encuestas, etc. sin contenido útil).
+    """
+    vistos = set()
+    posts = []
+    for script in _extraer_scripts_json(html):
+        for story in _buscar_por_typename(script, FB_TIPOS_POST):
+            clave = story.get('post_id') or story.get('nodeID') or story.get('id')
+            if not clave or clave in vistos:
+                continue
+            vistos.add(clave)
+            if _texto_story_fb(story) or _imagenes_story_fb(story):
+                posts.append(story)
+    return posts
+
+
+def extraer_posts_facebook(pagina: str, limite: int = LIMITE_FB_PRIMERA_TANDA,
+                           api_key: Optional[str] = None) -> dict:
+    """
+    Extrae los posts públicos recientes de una Página de Facebook usando el
+    Scraping Browser (WebSocket CDP) + el JSON de hidratación de Relay
+    (`__typename` `User`/`Story`). No requiere login de Facebook.
+
+    Limitaciones conocidas: los conteos de reacciones/comentarios/compartidos
+    pueden no estar disponibles en sesión anónima (se fijan en 0); el scroll
+    profundo o IPs de datacenter pueden disparar muro de login (se reporta como
+    error claro, no como bug).
+
+    Retorna:
+        dict con 'success' (bool), 'profile' (metadatos de la Página),
+        'posts' (items normalizables) y 'error' (str o None).
+    """
+    api_key = api_key or obtener_api_key()
+    if not api_key:
+        return {'success': False, 'profile': None, 'posts': [],
+                'error': 'No hay API Key configurada'}
+    pagina = str(pagina).strip().strip('/')
+    if not pagina:
+        return {'success': False, 'profile': None, 'posts': [],
+                'error': 'Página de Facebook vacía'}
+    try:
+        return asyncio.run(_intento_pagina_fb(pagina, api_key, int(limite)))
+    except asyncio.TimeoutError:
+        return {'success': False, 'profile': None, 'posts': [],
+                'error': 'Tiempo de espera agotado'}
+    except Exception as e:
+        print(f'SCRAPELESS: Facebook - fallo no controlado: {e}')
+        return {'success': False, 'profile': None, 'posts': [],
+                'error': f'Error inesperado en la extracción: {e}'}
+
+
 def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     """
     Ejecuta un plan de extracción real. Flujos soportados:
     - TikTok perfil (`scraper.tiktok.user.detail` + `scraper.tiktok.user.work`).
     - Instagram perfil (Scraping Browser / CDP + API interna `web_profile_info`).
+    - X/Twitter perfil (actor AI `scraper.grok`).
+    - Facebook perfil (Scraping Browser + JSON de hidratación de Relay `User`/`Story`).
     La búsqueda por palabra clave queda fuera (deprecada o sin soporte anónimo).
 
     Retorna:
         dict con 'df' (DataFrame normalizado), 'posts_obtenidos', 'errores',
-        'error' y 'perfil_instagram' (perfil extraído, si el plan es de Instagram).
+        'error', 'perfil_instagram' y 'perfil_facebook' (perfiles extraídos).
     """
     api_key = api_key or obtener_api_key()
     frames = []
     items_crudos = []
     errores = []
     perfil_instagram = None
+    perfil_facebook = None
     for config in plan:
         if not (config.get('activo') and config.get('consulta')):
             continue
@@ -885,6 +1272,14 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
         elif red in ('X', 'Twitter'):
             error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
             items = []
+        elif red == 'Facebook' and ambito == 'perfil':
+            res_fb = extraer_posts_facebook(objetivo, limite, api_key=api_key)
+            items = res_fb.get('posts') or []
+            perfil_facebook = res_fb.get('profile')
+            error = res_fb.get('error')
+        elif red == 'Facebook':
+            error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
+            items = []
         else:
             continue
         if error:
@@ -898,12 +1293,14 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
             'El plan no produjo datos (revisa el @usuario y las redes activas).'
         print(f'SCRAPELESS: plan sin resultados -> {mensaje}')
         return {'df': None, 'posts_obtenidos': 0, 'items': [], 'errores': errores,
-                'error': mensaje, 'perfil_instagram': perfil_instagram}
+                'error': mensaje, 'perfil_instagram': perfil_instagram,
+                'perfil_facebook': perfil_facebook}
     df = pd.concat(frames, ignore_index=True)
     if errores:
         print(f'SCRAPELESS: plan con errores parciales -> {errores}')
     return {'df': df, 'posts_obtenidos': len(df), 'items': items_crudos,
-            'errores': errores, 'error': None, 'perfil_instagram': perfil_instagram}
+            'errores': errores, 'error': None, 'perfil_instagram': perfil_instagram,
+            'perfil_facebook': perfil_facebook}
 
 
 # --- Estimación de costo -----------------------------------------------------
@@ -933,6 +1330,11 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
             # Un prompt de Grok (la respuesta cita los posts detectados).
             peticiones += 1
             costo += COSTO_GROK
+            continue
+        if config.get('red') == 'Facebook' and config.get('ambito') == 'perfil':
+            # Una sesión CDP contempla la navegación, la hidratación y el parseo.
+            peticiones += 1
+            costo += COSTO_SESION_BROWSER
             continue
         llamadas = max(1, math.ceil(
             int(config.get('limite') or RESULTADOS_POR_LLAMADA) / RESULTADOS_POR_LLAMADA

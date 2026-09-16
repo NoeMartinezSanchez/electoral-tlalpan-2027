@@ -260,6 +260,7 @@ def _inicializar_config_extraccion():
         'estado_extraccion': None,
         'ultima_extraccion': None,
         'perfil_instagram': None,
+        'perfil_facebook': None,
     }
     for clave, valor in valores_por_defecto.items():
         if clave not in st.session_state:
@@ -273,6 +274,7 @@ def _armar_plan() -> list:
     tt_activa = bool(st.session_state.get('cfg_tt_activa')) and red_seleccionada == 'TikTok - Perfil'
     ig_activa = bool(st.session_state.get('cfg_ig_activa')) and red_seleccionada == 'Instagram - Perfil'
     x_activa = bool(st.session_state.get('cfg_x_activa')) and red_seleccionada == 'X (Twitter) - Perfil'
+    fb_activa = bool(st.session_state.get('cfg_fb_activa')) and red_seleccionada == 'Facebook - Página Pública'
     return [
         {
             'red': 'TikTok',
@@ -294,6 +296,13 @@ def _armar_plan() -> list:
             'activo': x_activa,
             'consulta': st.session_state.get('cfg_x_keyword', '').strip(),
             'limite': int(st.session_state.get('cfg_x_limite', 20)),
+        },
+        {
+            'red': 'Facebook',
+            'ambito': ambito,
+            'activo': fb_activa,
+            'consulta': st.session_state.get('cfg_fb_keyword', '').strip(),
+            'limite': int(st.session_state.get('cfg_fb_limite', 12)),
         },
     ]
 
@@ -375,6 +384,8 @@ def _ejecutar_extraccion():
         spinner_texto = f"Extrayendo perfil y posts de Instagram @{usuarios} (Scraping Browser)..."
     elif 'X' in red_sel:
         spinner_texto = f"Consultando posts de X @{usuarios} (scraper.grok)... puede tardar ~1 min"
+    elif 'Facebook' in red_sel:
+        spinner_texto = f"Extrayendo posts públicos de Facebook /{usuarios} (Scraping Browser + Relay JSON)..."
     else:
         spinner_texto = f"Descargando publicaciones reales de @{usuarios} desde Scrapeless..."
     with st.spinner(spinner_texto):
@@ -388,8 +399,12 @@ def _ejecutar_extraccion():
             # Se conserva en session_state para mostrarlo en el dashboard y en el
             # resultado de la extracción aun después de st.rerun().
             st.session_state.perfil_instagram = perfil_ig
+        perfil_fb = resultado.get('perfil_facebook')
+        if perfil_fb:
+            st.session_state.perfil_facebook = perfil_fb
         red_guardado = ('Instagram' if 'Instagram' in red_sel
-                        else 'X' if 'X' in red_sel else 'TikTok')
+                        else 'X' if 'X' in red_sel
+                        else 'Facebook' if 'Facebook' in red_sel else 'TikTok')
         guardado = _guardar_resultados(
             resultado['df'], resultado.get('items', []), usuarios,
             red_social=red_guardado)
@@ -456,6 +471,27 @@ def _render_resultado_extraccion():
         if perfil_ig.get('verificado'):
             st.caption("✅ Cuenta verificada")
         st.markdown("---")
+    # Tarjeta de la Página de Facebook (si la última extracción fue de Facebook).
+    perfil_fb = st.session_state.get('perfil_facebook')
+    if perfil_fb:
+        st.markdown("#### 📘 Página de Facebook")
+        fb_avatar = perfil_fb.get('avatar_url')
+        if fb_avatar:
+            try:
+                st.image(fb_avatar, width=90, caption=f"/{ultima['usuario']}")
+            except Exception as e:
+                print(f'SCRAPELESS: no se pudo mostrar el avatar FB ({e})')
+                st.markdown(f"**/{ultima['usuario']}**")
+        else:
+            st.markdown(f"**/{ultima['usuario']}**")
+        nombre = perfil_fb.get('nombre') or ultima['usuario']
+        seg_fb = perfil_fb.get('seguidores', 0)
+        col_f1, col_f2 = st.columns(2)
+        col_f1.metric("👥 Seguidores", f"{seg_fb:,}" if seg_fb else 'No disponible')
+        col_f2.metric("📇 Nombre", nombre if len(nombre) < 25 else nombre[:22] + '…')
+        if perfil_fb.get('descripcion'):
+            st.caption((perfil_fb['descripcion'] or '')[:200])
+        st.markdown("---")
     with st.expander(f"🔎 Ver estructura del resultado de @{ultima['usuario']} "
                      f"({ultima['n_items']} posts)"):
         st.markdown("**Tabla normalizada (dashboard):**")
@@ -489,12 +525,14 @@ def _mostrar_config_real():
 
     st.selectbox(
         "Red social a extraer:",
-        options=["TikTok - Perfil", "Instagram - Perfil", "X (Twitter) - Perfil"],
+        options=["TikTok - Perfil", "Instagram - Perfil", "X (Twitter) - Perfil",
+                 "Facebook - Página Pública"],
         key='red_extraccion',
         help="TikTok usa la Scraping API (actores); Instagram usa el Scraping "
              "Browser (CDP) + la API interna web_profile_info; X usa el actor AI "
-             "scraper.grok (citas de posts). Todos con la misma API Key de "
-             "Scrapeless y sin login de la red social.",
+             "scraper.grok (citas de posts); Facebook usa el Scraping Browser + "
+             "el JSON de hidratación de Relay (páginas públicas). Todos con la "
+             "misma API Key de Scrapeless y sin login.",
     )
 
     st.radio(
@@ -515,20 +553,21 @@ def _mostrar_config_real():
     ambito = st.session_state.get('ambito_extraccion', 'perfil')
     solo_instagram = red_seleccionada == 'Instagram - Perfil'
     solo_x = red_seleccionada == 'X (Twitter) - Perfil'
+    solo_fb = red_seleccionada == 'Facebook - Página Pública'
 
     col_tt, col_ig = st.columns(2)
     with col_tt:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
         st.markdown("**🎵 TikTok (disponible)**")
-        habilitado_tt = not (solo_instagram or solo_x)
+        habilitado_tt = not (solo_instagram or solo_x or solo_fb)
         if ambito == 'perfil':
             st.checkbox("Habilitar", key='cfg_tt_activa', value=habilitado_tt,
-                        disabled=(solo_instagram or solo_x))
+                        disabled=(solo_instagram or solo_x or solo_fb))
             st.text_input("Usuario de TikTok (@cuenta)", key='cfg_tt_keyword',
-                          disabled=(solo_instagram or solo_x),
+                          disabled=(solo_instagram or solo_x or solo_fb),
                           placeholder="ej. @gobiernocdmx o alcaldia_tlalpan")
             st.slider("Nº de publicaciones", 5, 200, 35, 5, key='cfg_tt_limite',
-                      disabled=(solo_instagram or solo_x))
+                      disabled=(solo_instagram or solo_x or solo_fb))
         else:
             st.info("La búsqueda por palabra clave en TikTok no está soportada por Scrapeless.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -548,6 +587,9 @@ def _mostrar_config_real():
                       disabled=not solo_instagram,
                       help="Primera página de la grilla (~12); más requiere "
                            "GraphQL, muy rate-limitado en sesión anónima.")
+            st.caption("⚠️ Meta puede bloquear la extracción anónima desde egress "
+                       "de datacenter (error 'require_login'). Se usa el modo "
+                       "integrado proxyCountry=MX del Scraping Browser.")
         else:
             st.info("La búsqueda por palabra clave en Instagram requiere login.")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -573,6 +615,30 @@ def _mostrar_config_real():
             st.info("La búsqueda por palabra clave en X requiere login.")
         st.markdown('</div>', unsafe_allow_html=True)
 
+    col_fb = st.columns(1)[0]
+    with col_fb:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        st.markdown("**📘 Facebook (disponible)**")
+        habilitado_fb = solo_fb
+        if ambito == 'perfil':
+            st.checkbox("Habilitar", key='cfg_fb_activa', value=habilitado_fb,
+                        disabled=not solo_fb,
+                        help="Extracción real de una Página pública vía Scraping "
+                             "Browser + JSON de hidratación de Relay, sin login.")
+            st.text_input("Página de Facebook (vanity)", key='cfg_fb_keyword',
+                          disabled=not solo_fb,
+                          placeholder="ej. TlalpanGob o GobCDMX")
+            st.slider("Nº de publicaciones", 1, 50, 12, 1, key='cfg_fb_limite',
+                      disabled=not solo_fb,
+                      help="Primera tanda sin scroll (~12). El scroll profundo "
+                           "dispara el muro de login en Facebook.")
+            st.caption("⚠️ Los conteos de reacciones/comentarios/compartidos "
+                       "pueden no estar disponibles en sesión anónima (0). "
+                       "Páginas públicas; usa proxyCountry=MX integrado.")
+        else:
+            st.info("La búsqueda por palabra clave en Facebook requiere login.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
     balance_actual = st.session_state.get('scrapeless_balance')
     credito_actual = balance_actual['creditos'] if balance_actual else None
     est = estimar_costo(_armar_plan(), credito_actual)
@@ -587,9 +653,11 @@ def _mostrar_config_real():
     _render_resultado_extraccion()
 
     st.caption("Extracción real soportada: TikTok (`user.detail`+`user.work`, Scraping API), "
-               "Instagram (Scraping Browser/CDP + API interna `web_profile_info`, sin login) "
-               "y X/Twitter (actor AI `scraper.grok` cita posts recientes; likes/comentarios "
-               "no disponibles). La búsqueda por palabra clave no está disponible.")
+               "Instagram (Scraping Browser/CDP + API interna `web_profile_info`, sin login), "
+               "X/Twitter (actor AI `scraper.grok` cita posts recientes; likes/comentarios "
+               "no disponibles) y Facebook (Scraping Browser + JSON de hidratación de "
+               "Relay; engagement puede ser 0 en sesión anónima). La búsqueda por "
+               "palabra clave no está disponible.")
 
 def mostrar_configuracion_extraccion():
     """

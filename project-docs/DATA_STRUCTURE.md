@@ -97,12 +97,15 @@ def simular_visita(secciones_df):
 
 > **ACTUALIZACIÓN**: la Pestaña 2 es **real-only**. Los posts llegan de Scrapeless
 > (TikTok vía Scraping API; Instagram vía Scraping Browser + API interna
-> `web_profile_info`; X vía actor AI `scraper.grok`) y se normalizan a las mismas
-> columnas de este esquema con `normalizar_posts()` en `modules/scrapeless.py`.
+> `web_profile_info`; X vía actor AI `scraper.grok`; Facebook vía Scraping Browser
+> + JSON de hidratación de Relay) y se normalizan a las mismas columnas de este
+> esquema con `normalizar_posts()` en `modules/scrapeless.py`.
 > En posts de Instagram `vistas`/`guardados` se fijan en 0 (no disponibles en
 > sesión anónima); en posts de X `likes`/`comentarios` se fijan en 0 (no
-> expuestos por la API de Grok) y `vistas` vienen de `view_count`. El
-> `engagement_rate` se calcula sobre 1,000 impresiones simuladas.
+> expuestos por la API de Grok) y `vistas` vienen de `view_count`; en posts de
+> Facebook `likes`/`comentarios`/`compartidos` pueden ser 0 si Facebook no los
+> expone en sesión anónima. El `engagement_rate` se calcula sobre 1,000
+> impresiones simuladas.
 
 ### DataFrame: `posts_sociales`
 | Campo | Tipo | Descripción | Ejemplo |

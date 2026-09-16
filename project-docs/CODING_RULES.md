@@ -444,6 +444,9 @@ sintéticos de redes sociales. Los datos llegan de Scrapeless:
 - X/Twitter: actor AI `scraper.grok` (`/api/v2/scraper/execute`). Los posts son
   CITAS de Grok (muestreo, no feed completo); likes/comentarios no disponibles
   (0), vistas vía `view_count`.
+- Facebook: Página pública vía Scraping Browser + JSON de hidratación de Relay
+  (`__typename` `User`/`Story`). Engagement puede ser 0 en sesión anónima; muro
+  de login bajo scroll o IPs datacenter (error claro de Meta, no bug).
 Resultados normalizados a las columnas de `COLUMNAS_POSTS` y guardados en
 `datos_extraidos/`. Todo nuevo flujo de extracción debe mantener manejo de
 errores (404/privado/401-403/429/login-wall/timeout) y docstrings en español.
