@@ -350,16 +350,17 @@ def mostrar_dashboard_redes_sociales():
                 "o de X, o sube CSVs de Facebook/Instagram en el modo 'CSV manual'.")
         return
     # Fechas válidas (los posts manuales de Facebook no tienen fecha -> NaT)
+    rango_fechas = None
+    min_date = None
+    max_date = None
     fechas_validas = df_actual['fecha'].dropna()
-    if fechas_validas.empty:
-        rango_fechas = None
-    else:
+    if not fechas_validas.empty:
         min_date = fechas_validas.min().date()
         max_date = fechas_validas.max().date()
 
     col_sub1, col_sub2 = st.columns([3, 1])
     with col_sub1:
-        if rango_fechas is None:
+        if min_date is None or max_date is None:
             st.caption("🗓️ No hay fechas en los datos (posts de Facebook manuales "
                        "sin fecha). No se aplica filtro de rango.")
         else:

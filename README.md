@@ -2,9 +2,11 @@
 
 Demo técnico mobile-first construido con **Streamlit** que simula un sistema de
 inteligencia electoral para el proceso electoral intermedio 2027 en Tlalpan.
-Incluye **login simple** y, en la Pestaña 2, **extracción de datos reales** de
-**TikTok** vía la **Scraping API de Scrapeless** (perfil por @usuario), con
-analítica y exportación de resultados sin generación sintética.
+Incluye **login simple** y, en la Pestaña 2, **datos reales de redes sociales**:
+**TikTok** vía la **Scraping API de Scrapeless** (perfil por @usuario) y
+**X/Twitter** vía el actor AI **`scraper.grok`**, además de **carga manual de
+CSVs de Facebook/Instagram** (extensión Instant Data Scraper), con analítica y
+exportación de resultados sin generación sintética.
 
 ## 🧱 Pestañas
 
@@ -20,13 +22,20 @@ analítica y exportación de resultados sin generación sintética.
   determinista cuando Tesseract no está instalado.
 
 ### 2. 📊 Redes Sociales
-- Dashboard de analítica sobre posts (TikTok, Facebook, X, Instagram).
+- Dashboard de analítica sobre posts (TikTok, X, Facebook, Instagram).
 - KPIs de engagement, series temporales, nube de palabras por sentimiento,
   top temas, distribución por red y sentimiento en el tiempo.
 - Filtros por red social, tema electoral y rango de fechas.
-- **Solo datos reales**: el dashboard se alimenta de la extracción de un
-  **perfil de TikTok** vía Scrapeless (sin generación sintética). Exportación
-  a **CSV** y estructura de resultado en **JSON/CSV**.
+- **Solo datos reales**, en dos modos:
+  - **🔌 Scrapeless (TikTok + X)**: extracción de un **perfil de TikTok**
+    (`scraper.tiktok.user.detail` + `user.work`) y de **X/Twitter** (actor AI
+    `scraper.grok`, que cita posts recientes —muestreo, no feed completo—). Se
+    pueden elegir **una o varias redes por corrida** (multiselect).
+  - **📁 CSV manual (Facebook/Instagram)**: los posts de Meta se cargan con los
+    CSVs exportados por la extensión **Instant Data Scraper** y se anexan al
+    dashboard (Facebook no trae fecha → "Sin fecha"; Instagram convierte la
+    fecha relativa a absoluta).
+- Exportación a **CSV** y estructura de resultado en **JSON/CSV**.
 
 ## 🛠️ Stack técnico
 
@@ -39,6 +48,7 @@ analítica y exportación de resultados sin generación sintética.
 | Hugging Face `transformers` | Clasificación zero-shot de quejas |
 | pytesseract / Tesseract | OCR de actas |
 | Plotly / matplotlib / wordcloud | Visualizaciones |
+| Playwright | Cliente CDP del Scraping Browser (Instagram/Facebook) |
 | Faker | Datos sintéticos en español (`es_MX`) |
 
 ## 🚀 Instalación y ejecución
@@ -94,18 +104,51 @@ pública.
 **Modo demo**: si no existe `.streamlit/secrets.toml`, la app usa por defecto
 `admin` / `tlalpan2027` (sin archivo de secrets) e imprime un aviso por consola.
 
-## 🚀 Extracción real de datos (Scrapeless)
+## 🚀 Datos reales de redes sociales (Pestaña 2)
 
-En la **Pestaña 2** se descargan las publicaciones recientes de un **perfil de
-TikTok (@usuario)** —texto, hashtags y engagement (likes, comentarios,
-compartidos, vistas, guardados)— e integra los resultados a la analítica
-existente (KPIs, series, wordcloud, sentimiento, CSV).
+En la **Pestaña 2** se integran, sin generación sintética, posts de 4 redes:
 
-> ⚠️ **Limitaciones del proveedor**: Scrapeless deprecó el actor de búsqueda
-> por palabra clave/hashtag de TikTok (`scraper.tiktok.search`) y **no publica
-> actor para Instagram**, por lo que ambos ámbitos quedan deshabilitados en la
-> app (se muestran con un aviso). Cuando el proveedor publique esos actores,
-> se reactivan desde el dict `ACTORES`.
+| Red | Método | Estado |
+|---|---|---|
+| **TikTok** | Scraping API de Scrapeless: perfil por @usuario (`scraper.tiktok.user.detail` → `scraper.tiktok.user.work`) | ✅ Operativo (en la UI) |
+| **X / Twitter** | Actor AI `scraper.grok` (`POST /api/v2/scraper/execute`): responde al prompt "What has @usuario posted on X recently?" y **cita** posts (`x_search_results` = muestreo, no feed completo; likes/comentarios no expuestos → 0; vistas sí) | ✅ Operativo (en la UI) |
+| **Instagram** | Scraping Browser (WebSocket CDP) + API interna `web_profile_info`, sin login | ⚠️ Implementado pero **bloqueado por Meta** desde egress de datacenter (`401 require_login`); no en la UI |
+| **Facebook** | Scraping Browser + JSON de hidratación de Relay (`__typename` `User`/`Story`) | ⚠️ Implementado pero **bloqueado por Meta** (HTML sin nodos `Story`); no en la UI |
+
+### Unión de los 4 datasets
+
+- Un **solo DataFrame** `posts_sociales` con el esquema estándar
+  (`COLUMNAS_POSTS`); cada red aporta las columnas que tiene y las que no quedan
+  en **0** (Facebook/Instagram manuales: `vistas`/`guardados` = 0; X: likes/
+  comentarios = 0).
+- **Facebook no trae fecha** → `NaT` → se muestra **"Sin fecha"** y queda **fuera
+  de las series temporales** (el filtro de rango de fechas solo restringe filas
+  con fecha; las sin fecha siempre se muestran).
+- **Instagram** trae fecha relativa ("7 h", "20 h") que se convierte a **absoluta**
+  al procesar.
+- El engagement/`engagement_rate` usa la misma fórmula para todas las redes
+  (`engagement = likes + comentarios + compartidos`; base 1,000 simulada).
+
+### 📁 Carga manual de Facebook/Instagram (Instant Data Scraper)
+
+Dado el bloqueo de Meta, los posts de Facebook e Instagram se integran de forma
+**manual** desde el modo **"📁 CSV manual (Facebook/Instagram)"** del panel:
+
+1. Exporta los posts con la extensión **Instant Data Scraper** (Chrome).
+2. Sube los CSVs en la app (uno por red).
+3. `modules/manual_csv.py` detecta el formato por **contenido** (no por columnas
+   CSS), limpia métricas ("2,1 mil" → 2100), convierte fechas relativas y
+   normaliza al esquema del dashboard.
+4. Los posts **se anexan** a los datos de TikTok/X ya cargados.
+
+El botón "🧹 Limpiar datos" restablece el dashboard.
+
+> ⚠️ **Limitación de la extracción automática de Meta (2026)**: desde egress de
+> datacenter, Meta bloquea el render/sesión anónima (Instagram responde
+> `401 require_login`; Facebook sirve HTML sin nodos `Story` en el JSON de
+> hidratación). No es un bug del código: el flujo queda con degradación elegante
+> (errores claros, sin crash). La extracción automática de Meta requeriría un
+> plan con **proxy residencial** o migrar la extracción a Apify.
 
 ### Dónde pegar tu API Key de Scrapeless
 
@@ -118,17 +161,18 @@ API_KEY = "tu_api_key_real"
 
 ### Configuración
 
-El panel permite elegir el **@usuario de TikTok** a monitorear y el **número de
-publicaciones** (5–200) a descargar. También muestra la **estimación de
-peticiones y costo USD** contra tu **saldo** (consultado con `GET /api/v1/me`).
+- **🔌 Scrapeless**: multiselect para elegir **TikTok, X o ambas**, con el
+  @usuario y el número de publicaciones por red. Muestra la **estimación de
+  peticiones y costo USD** contra tu **saldo** (`GET /api/v1/me`).
+- **📁 CSV manual**: dos uploaders (Facebook e Instagram) + botón "📁 Procesar
+  CSVs".
 
 ### Resultados y estructura
 
-Cada extracción exitosa se guarda en `datos_extraidos/` (gitignored):
+Cada extracción procesada se guarda en `datos_extraidos/` (gitignored):
 
-- `posts_<usuario>_<fecha>.csv` — tabla normalizada que alimenta el dashboard.
-- `raw_<usuario>_<fecha>.json` — items crudos devueltos por Scrapeless, para
-  decidir qué analítica extraer de la estructura real.
+- `posts_<red>_<usuario>_<fecha>.csv` — tabla normalizada que alimenta el dashboard.
+- `raw_<red>_<usuario>_<fecha>.json` — items crudos de Scrapeless.
 
 En la app, el expander "🔎 Ver estructura del resultado" muestra un adelanto y
 botones **📥 Descargar CSV / JSON** de la última extracción.
@@ -139,21 +183,22 @@ compartidos`) para análisis de alcance y rendimiento.
 
 ### Costo y activación
 
-- Scrapeless cobra **solo por peticiones exitosas** (HTTP 200 con JSON válido);
-  las cacheadas o fallidas no cuestan.
-- Las cuentas nuevas incluyen **~$5 de crédito gratis** (sin tarjeta).
-- Sin API Key/saldo o si la llamada falla, la app avisa con el error real de
-  Scrapeless (no genera datos falsos). La API Key se lee solo de los Secrets.
+- Scrapeless cobra por peticiones de la Scraping API y sesiones del **Scraping
+  Browser** (Instagram/Facebook ≈ $0.05–0.10 por página); el actor AI
+  `scraper.grok` cobra por prompt (~$0.10–0.30).
+- Sin API Key/saldo o si la llamada falla, la app avisa con el error real
+  (no genera datos falsos). La API Key se lee solo de los Secrets.
 
 ### Actores de la API
 
-Centralizados en `modules/scrapeless.py` (dict `ACTORES`). El flujo de perfil
-usa dos actores confirmados:
+Centralizados en `modules/scrapeless.py` (dict `ACTORES`):
 
-| Paso | Actor | Input |
-|---|---|---|
-| Resolver perfil | `scraper.tiktok.user.detail` | `unique_id` (sin @) |
-| Publicaciones | `scraper.tiktok.user.work` | `sec_uid`, `cursor`, `count` |
+| Red | Actor/Mecanismo |
+|---|---|
+| TikTok (perfil) | `scraper.tiktok.user.detail` → `scraper.tiktok.user.work` (Scraping API v1) |
+| X / Twitter | `scraper.grok` (AI-answer, `POST /api/v2/scraper/execute`) |
+| Instagram | Scraping Browser (CDP) + API interna `web_profile_info` (fuera de la UI) |
+| Facebook | Scraping Browser + JSON de hidratación de Relay (fuera de la UI) |
 
 ## 📁 Estructura del repositorio
 
@@ -166,9 +211,10 @@ electoral/
 │   ├── data.py                     # Secciones, CONFIG, simulación de visitas
 │   ├── nlp.py                      # Clasificación de quejas (zero-shot + reglas)
 │   ├── ocr.py                      # Procesamiento de actas (OCR + fallback)
-│   ├── scrapeless.py               # Cliente Scraping API (saldo, perfil TikTok, normalización)
+│   ├── scrapeless.py               # Cliente Scraping API/Browser (TikTok, X, Instagram, Facebook)
+│   ├── manual_csv.py               # Carga manual de CSVs Facebook/Instagram (Instant Data Scraper)
 │   ├── social_media.py             # Dashboard de redes sociales (Pestaña 2)
-│   └── social_media_generator.py   # Generador de posts sintéticos
+│   └── social_media_generator.py   # Generador de posts sintéticos (legacy)
 ├── project-docs/                   # Especificación, contratos de datos y reglas
 ├── requirements.txt
 └── .gitignore
@@ -183,6 +229,6 @@ electoral/
 ## ⚖️ Aviso
 
 Proyecto **demostrativo** para fines de prototipo y capacitación. Los datos,
-resultados y visualizaciones son simulados **o extraídos de fuentes públicas vía
-Scrapeless** y no representan información real de nómina, preferencias
-electorales ni resultados oficiales.
+resultados y visualizaciones son simulados, extraídos de fuentes públicas vía
+Scrapeless o cargados manualmente por el usuario, y no representan información
+real de nómina, preferencias electorales ni resultados oficiales.
