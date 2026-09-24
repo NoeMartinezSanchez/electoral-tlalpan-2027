@@ -252,3 +252,22 @@ sintética de posts.
 Perfil no encontrado (404), perfil privado, 401/403 (autenticación/bloqueo), 429
 (rate limit), redirección a login (login-wall) y timeout — todos devuelven mensajes
 claros en la UI sin romper la aplicación.
+
+## DATOS REALES DE CAMPO (Pestaña 1) — Etapa 0
+
+La geografía de la Pestaña 1 pasa de demo a datos reales desde el **Marco
+Geográfico Electoral del IECM 2021**:
+
+- Fuente: `documentos/Marco geografico electoral/circunscripcionesDT/12.kml`
+  (KML de las **demarcaciones territoriales / alcaldías** del IECM).
+- Resultado: **355 secciones electorales de Tlalpan** (CRS EPSG:4326) con:
+  - `Sección` (id), `Distrito_Federal`/`Distrito_Local`, `Circunscripción`
+  - `Padrón_Electoral` y `Lista_Nominal` (corte PE/LN 2021)
+  - `Población_INEGI_2010`
+  - Geometría (polígono) → centroide + **geometría simplificada** (GeoJSON)
+- `modules/geo.py` (parseo KML, genera `data/secciones_ine.csv`) →
+  `modules/datos_campo.py` (`importar_secciones_ine()` escribe en Mongo `secciones`).
+- La app usa Mongo (`secciones_para_app`) y cae a demo si no hay conexión/importación.
+- **Pendiente**: vivienda y Población del **Censo INEGI 2020** (se cruzará después);
+  `padrón/list`a con corte 2021 y población 2010 = son referencias, no cifras vigentes.
+- La **cobertura real** se medirá (Etapa 1) como `{simpatías} / Lista_Nominal`.

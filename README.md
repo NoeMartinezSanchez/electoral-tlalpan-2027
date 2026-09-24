@@ -11,7 +11,7 @@ exportación de resultados sin generación sintética.
 ## 🧱 Pestañas
 
 ### 1. 🗳️ Inteligencia Electoral
-- Mapa interactivo (Folium) con 10 secciones electorales de Tlalpan, coloreadas
+- Mapa interactivo (Folium) con las secciones electorales de Tlalpan, coloreadas
   según la intención de voto (💚 a favor, ❤️ en contra, 💛 indeciso).
 - Simulación de **visitas de campo** que actualizan cobertura, intención de voto
   y bitácora de quejas en tiempo real.
@@ -20,6 +20,18 @@ exportación de resultados sin generación sintética.
 - Centro de alertas automático (baja cobertura, zonas críticas).
 - OCR de actas de escrutinio con **pytesseract** (Tesseract) y simulador
   determinista cuando Tesseract no está instalado.
+- **Migración a datos reales (Etapa 0)**: la geografía de secciones se carga del
+  **Marco Geográfico Electoral del IECM 2021** (`circunscripcionesDT/12.kml`) —
+  **355 secciones de Tlalpan** con padrón/lista nominal 2021 y población INEGI
+  2010 — y se importa a **MongoDB Atlas** (`modules/geo.py` +
+  `modules/datos_campo.py`). Mientras no haya conexión/importación, la app usa el
+  set demo y lo indica en la cabecera.
+- **Registro real de campo (Etapa 1)**: formulario de brigadista (simpatía /
+  visita / queja) que guarda en Mongo e identifica al usuario del login. La
+  **cobertura real** se calcula como `registros / Lista_Nominal × 100` y la
+  intención por sección como la **moda de simpatías**. Alertas del documento:
+  indecisión >40%, cobertura <30% y concentración de quejas de agua (≥3). El
+  modo **Demo** (simular visita) queda como opción conmutable.
 
 ### 2. 📊 Redes Sociales
 - Dashboard de analítica sobre posts (TikTok, X, Facebook, Instagram).
@@ -49,6 +61,7 @@ exportación de resultados sin generación sintética.
 | pytesseract / Tesseract | OCR de actas |
 | Plotly / matplotlib / wordcloud | Visualizaciones |
 | Playwright | Cliente CDP del Scraping Browser (Instagram/Facebook) |
+| MongoDB Atlas (`pymongo`) | Persistencia de datos de campo de la Pestaña 1 |
 | Faker | Datos sintéticos en español (`es_MX`) |
 
 ## 🚀 Instalación y ejecución
@@ -200,6 +213,36 @@ Centralizados en `modules/scrapeless.py` (dict `ACTORES`):
 | Instagram | Scraping Browser (CDP) + API interna `web_profile_info` (fuera de la UI) |
 | Facebook | Scraping Browser + JSON de hidratación de Relay (fuera de la UI) |
 
+## 🗳️ Datos de campo (Pestaña 1) — MongoDB Atlas
+
+La **Pestaña 1** persiste los datos reales de la campaña en **MongoDB Atlas**
+(módulos `modules/geo.py` y `modules/datos_campo.py`):
+
+- Colección `secciones` — **355 secciones electorales de Tlalpan** importadas del
+  **Marco Geográfico Electoral del IECM 2021** (`circunscripcionesDT/12.kml`),
+  con `padron_electoral`/`lista_nominal` (corte 2021), `Población_INEGI_2010`,
+  centroide y geometría simplificada.
+- Colección `registros_campo` — visitas / simpatías / quejas-incidencias de
+  brigadistas (etiquetadas como "simpatías" e "incidencias comunitarias", sin
+  datos personales, según la nota de campaña INE).
+
+Configura los Secrets:
+
+```toml
+[MONGO]
+URI = "mongodb+srv://<db_username>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority"
+DB = "electoral_tlalpan"
+```
+
+> Para usar geografía real: pulsa **"🔄 Importar secciones INE/IECM"** en la app
+> (parsea el KML del IECM y escribe en `secciones` de Mongo; también genera
+> `data/secciones_ine.csv` como respaldo). Mientras no haya conexión a Mongo o
+> importación, la app usa el set demo y lo avisa en la cabecera.
+>
+> **Pendiente**: vivienda y población Censo 2020 (INEGI) para métricas de
+> vivienda; `padrón/list`a tienen **corte 2021** y `Población_INEGI_2010` es del
+> censo 2010.
+
 ## 📁 Estructura del repositorio
 
 ```
@@ -208,7 +251,9 @@ electoral/
 ├── utils.py                        # CSS mobile-first y centro de alertas
 ├── modules/
 │   ├── auth.py                      # Autenticación (credenciales y validación)
-│   ├── data.py                     # Secciones, CONFIG, simulación de visitas
+│   ├── data.py                     # Secciones demo, CONFIG, simulación de visitas
+│   ├── geo.py                      # Cartografía electoral INE (secciones reales)
+│   ├── datos_campo.py              # Persistencia MongoDB Atlas (secciones, registros de campo)
 │   ├── nlp.py                      # Clasificación de quejas (zero-shot + reglas)
 │   ├── ocr.py                      # Procesamiento de actas (OCR + fallback)
 │   ├── scrapeless.py               # Cliente Scraping API/Browser (TikTok, X, Instagram, Facebook)

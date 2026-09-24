@@ -51,3 +51,6 @@ AGENTS.md
 
 # Datos de ejemplo de carga manual (Instant Data Scraper)
 documentos/
+
+# Datos reales locales (cartografía INE, backups)
+data/

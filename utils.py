@@ -217,6 +217,7 @@ def mostrar_login():
     if st.button("🔐 Iniciar Sesión", use_container_width=True):
         if validar_credenciales(usuario, contrasena):
             st.session_state.autenticado = True
+            st.session_state.usuario_login = usuario.strip() or 'admin'
             st.rerun()
         else:
             st.error("❌ Credenciales incorrectas. Intenta nuevamente.")
