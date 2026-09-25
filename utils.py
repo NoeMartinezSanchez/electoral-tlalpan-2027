@@ -348,6 +348,27 @@ def _verificar_saldo():
         st.success(f"💳 Saldo disponible: {balance['creditos']:.4f} créditos "
                    f"(+{balance['excesos']:.4f} exceso). Plan: {estado_plan}.")
 
+def _fusionar_posts(previo, nuevo) -> pd.DataFrame:
+    """
+    Fusiona un DataFrame nuevo de posts con los ya cargados en session_state,
+    anexando (no sobrescribe) y deduplicando por (red_social, id_post) para
+    conservar solo la primera aparición de cada post.
+
+    Retorna:
+        pd.DataFrame con el esquema de posts combinado ('vacío' si no hay nada).
+    """
+    if nuevo is None or (isinstance(nuevo, pd.DataFrame) and nuevo.empty):
+        if previo is not None and isinstance(previo, pd.DataFrame) and not previo.empty:
+            return previo.reset_index(drop=True)
+        return _df_posts_vacio_ui()
+    if previo is None or (isinstance(previo, pd.DataFrame) and previo.empty):
+        return nuevo.reset_index(drop=True)
+    combinado = pd.concat([previo, nuevo], ignore_index=True)
+    if 'red_social' in combinado.columns and 'id_post' in combinado.columns:
+        combinado = combinado.drop_duplicates(
+            subset=['red_social', 'id_post'], keep='first')
+    return combinado.reset_index(drop=True)
+
 def _ejecutar_extraccion():
     """Ejecuta una extracción real de una o varias redes y guarda los resultados."""
     api_key = obtener_api_key()
@@ -382,8 +403,12 @@ def _ejecutar_extraccion():
     with st.spinner(spinner_texto):
         resultado = ejecutar_plan(plan, api_key=api_key)
     if resultado['df'] is not None:
-        st.session_state.posts_sociales = resultado['df']
-        st.session_state.posts_origen = 'real'
+        previo = st.session_state.get('posts_sociales')
+        df_total = _fusionar_posts(previo, resultado['df'])
+        st.session_state.posts_sociales = df_total
+        st.session_state.posts_origen = ('mixto' if previo is not None
+                                         and isinstance(previo, pd.DataFrame)
+                                         and not previo.empty else 'real')
         st.session_state.fecha_extraccion = datetime.now()
         # Prefijo de red(es) derivado del DataFrame resultante (robusto a mezclas)
         redes_df = sorted(resultado['df']['red_social'].unique())
@@ -499,8 +524,6 @@ def _mostrar_carga_manual_csv():
                 "🧹 Se limpiaron los datos del dashboard. Vuelve a extraer o subir CSVs.")
             st.rerun()
 
-    _render_resultado_extraccion()
-
 
 def _procesar_csvs_manuales():
     """
@@ -537,13 +560,12 @@ def _procesar_csvs_manuales():
 
     df_nuevo = pd.concat(frames_nuevos, ignore_index=True)
     previo = st.session_state.get('posts_sociales')
-    if previo is not None and isinstance(previo, pd.DataFrame) and not previo.empty:
-        df_total = pd.concat([previo, df_nuevo], ignore_index=True)
-    else:
-        df_total = df_nuevo
+    df_total = _fusionar_posts(previo, df_nuevo)
 
     st.session_state.posts_sociales = df_total
-    st.session_state.posts_origen = 'manual'
+    st.session_state.posts_origen = ('mixto' if previo is not None
+                                     and isinstance(previo, pd.DataFrame)
+                                     and not previo.empty else 'manual')
     st.session_state.fecha_extraccion = datetime.now()
 
     resumen = (f"✅ Procesados {len(resultado['fb'])} posts de Facebook, "
@@ -572,18 +594,10 @@ def _mostrar_config_real():
     """Panel de configuración para el modo Real (Scrapeless) y CSV manual."""
     _render_estado_extraccion()
 
-    st.radio(
-        "Modo de datos:",
-        options=["🔌 Scrapeless (TikTok + X)", "📁 CSV manual (Facebook/Instagram)"],
-        key='modo_datos',
-        horizontal=True,
-        help="Scrapeless descarga TikTok/X vía API. El modo manual procesa los "
-             "CSVs de la extensión Instant Data Scraper (Facebook/Instagram) y "
-             "los anexa a los datos ya cargados.",
-    )
-    if st.session_state.get('modo_datos') == '📁 CSV manual (Facebook/Instagram)':
-        _mostrar_carga_manual_csv()
-        return
+    st.markdown("### 🔌 Extracción real (Scrapeless) · TikTok + X")
+    st.caption("Descarga las publicaciones recientes de TikTok y/o X vía la API "
+               "de Scrapeless (@usuario). Los posts se anexan a los ya cargados "
+               "(incluidos los CSVs manuales de Facebook/Instagram).")
 
     col_sal, col_ver = st.columns([3, 1])
     with col_sal:
@@ -665,6 +679,11 @@ def _mostrar_config_real():
     if st.button("🚀 Ejecutar extracción", use_container_width=True):
         _ejecutar_extraccion()
 
+    st.markdown("<hr style='margin: 18px 0; border: 0; border-top: 1px solid #e2e8f0;'>",
+                unsafe_allow_html=True)
+
+    _mostrar_carga_manual_csv()
+
     _render_resultado_extraccion()
 
     st.caption("Extracción real soportada: TikTok (`user.detail`+`user.work`, Scraping API) "
@@ -674,12 +693,16 @@ def _mostrar_config_real():
 
 def mostrar_configuracion_extraccion():
     """
-    Panel de extracción real de la Pestaña 2 con la Scraping API de Scrapeless
-    (perfil de TikTok, por @usuario, con engagement real). Solo hay datos reales.
+    Panel de carga de datos de la Pestaña 2: extracción real vía Scrapeless
+    (TikTok/X) + carga manual de CSVs de Facebook/Instagram (Instant Data
+    Scraper). Ambos flujos están siempre visibles y su resultado se combina
+    en un solo DataFrame `posts_sociales` para el dashboard.
     """
     _inicializar_config_extraccion()
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-top: 8px;'>"
-                "🚀 Extracción Real de Datos (Scrapeless)</h4>", unsafe_allow_html=True)
-    st.caption("Descarga las publicaciones recientes de TikTok y/o X (@usuario) con su "
-               "engagement. La API Key se lee de los Secrets (`.streamlit/secrets.toml`).")
+                "🚀 Carga de Datos (Scrapeless + CSV manual)</h4>", unsafe_allow_html=True)
+    st.caption("Conjunta las 4 redes en un solo dashboard: TikTok/X por extracción "
+               "real (Scrapeless, @usuario) y Facebook/Instagram por CSV manual "
+               "(Instant Data Scraper). La API Key se lee de los Secrets "
+               "(`.streamlit/secrets.toml`).")
     _mostrar_config_real()
