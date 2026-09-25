@@ -10,8 +10,10 @@ from modules.social_media_generator import TEMAS_ELECTORALES
 from modules.analitica_social import (
     STOPWORDS_ES,
     alcance_por_tema,
+    alcance_por_tema_lda,
     analizar_lda,
     extraer_menciones,
+    frecuencia_hashtags,
     frecuencia_palabras,
     resumen_sentimiento,
 )
@@ -80,34 +82,30 @@ def mostrar_kpis(df):
     with col5:
         st.metric("📈 Engagement Total", f"{engagement_total:,}")
 
-def mostrar_evolucion_temporal(df):
+def fig_evolucion_temporal(df):
     """
-    Renderiza la evolución diaria de las interacciones agregadas en un gráfico de líneas interactivo.
+    Construye la figura de evolución diaria de las interacciones agregadas.
+    Reutilizable por el dashboard y por el PDF (las mismas gráficas).
+
+    Retorna:
+        go.Figure o None si no hay datos con fecha.
     """
-    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📈 Evolución de Interacciones</h4>", unsafe_allow_html=True)
-    if df.empty:
-        st.info("No hay datos suficientes para el rango seleccionado.")
-        return
-    # Posts sin fecha (Facebook manual) no entran en la serie temporal
-    df = df[df['fecha'].notna()]
-    if df.empty:
-        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
-                "pueden graficar en la serie temporal.")
-        return
-    st.caption("Los posts de Facebook (carga manual, sin fecha) no se incluyen "
-               "en la serie temporal.")
-        
-    df_daily = df.groupby(df['fecha'].dt.date).agg({
+    if df is None or df.empty or 'fecha' not in df.columns:
+        return None
+    d = df[df['fecha'].notna()].copy()
+    if d.empty or 'likes' not in d.columns:
+        return None
+    df_daily = d.groupby(d['fecha'].dt.date).agg({
         'likes': 'sum',
         'comentarios': 'sum',
-        'compartidos': 'sum'
+        'compartidos': 'sum',
     }).reset_index()
-    
+    if df_daily.empty:
+        return None
     df_daily = df_daily.sort_values(by='fecha')
-    
     fig = px.line(
-        df_daily, 
-        x='fecha', 
+        df_daily,
+        x='fecha',
         y=['likes', 'comentarios', 'compartidos'],
         labels={'value': 'Interacciones', 'fecha': 'Fecha', 'variable': 'Métrica'},
         color_discrete_map={
@@ -121,43 +119,82 @@ def mostrar_evolucion_temporal(df):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         height=320
     )
+    return fig
+
+
+def mostrar_evolucion_temporal(df):
+    """
+    Renderiza la evolución diaria de las interacciones agregadas en un gráfico
+    de líneas interactivo.
+    """
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📈 Evolución de Interacciones</h4>", unsafe_allow_html=True)
+    if df.empty:
+        st.info("No hay datos suficientes para el rango seleccionado.")
+        return
+    if 'fecha' not in df.columns or df['fecha'].notna().sum() == 0:
+        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
+                "pueden graficar en la serie temporal.")
+        return
+    st.caption("Los posts de Facebook (carga manual, sin fecha) no se incluyen "
+               "en la serie temporal.")
+    fig = fig_evolucion_temporal(df)
+    if fig is None:
+        st.info("No hay datos suficientes para el rango seleccionado.")
+        return
     st.plotly_chart(fig, use_container_width=True)
+
+def _fig_wordcloud(texto: str = '', frecuencias: dict = None, max_words: int = 80,
+                   color_func=None, stopwords=None, min_font_size: int = 8):
+    """
+    Construye una Figura matplotlib con una nube de palabras. Si se pasa
+    `frecuencias` (dict -> peso), se construye con `generate_from_frequencies`
+    (el tamaño respeta los conteos reales); si no, desde el texto plano.
+    Reutilizable por el dashboard y por el PDF.
+
+    Retorna:
+        plt.Figure o None si falla o no hay contenido.
+    """
+    try:
+        if frecuencias:
+            wc = WordCloud(width=800, height=400, background_color='white',
+                           max_words=max_words, random_state=42,
+                           min_font_size=min_font_size) \
+                .generate_from_frequencies(frecuencias)
+        else:
+            if not texto or not texto.strip():
+                return None
+            wc = WordCloud(width=800, height=400, background_color='white',
+                           stopwords=stopwords or set(), max_words=max_words,
+                           random_state=42, collocations=False,
+                           min_font_size=min_font_size).generate(texto)
+        if color_func is not None:
+            wc.recolor(color_func=color_func)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wc, interpolation='bilinear')
+        ax.axis('off')
+        return fig
+    except Exception as e:
+        print(f'WORDCLOUD: No se pudo generar la nube ({e})')
+        return None
+
 
 def mostrar_nube_palabras(df):
     """
-    Genera y dibuja una Nube de Palabras a partir del texto de los posts, 
+    Genera y dibuja una Nube de Palabras a partir del texto de los posts,
     coloreada según sentimientos.
     """
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>☁️ Nube de Temas (por sentimiento)</h4>", unsafe_allow_html=True)
-    if df.empty:
+    if df.empty or 'texto' not in df.columns:
         st.info("No hay suficientes datos de texto.")
         return
-        
-    textos = ' '.join(df['texto'].values)
-    
-    # Stopwords de uso frecuente en español (compartido con el análisis de texto)
-    stopwords_es = STOPWORDS_ES
-    
-    try:
-        wordcloud = WordCloud(
-            width=800, 
-            height=400, 
-            background_color='white',
-            stopwords=stopwords_es,
-            max_words=80,
-            random_state=42
-        ).generate(textos)
-        
-        # Aplicar recoloración personalizada por sentimiento
-        wordcloud.recolor(color_func=color_por_sentimiento)
-        
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.imshow(wordcloud, interpolation='bilinear')
-        ax.axis('off')
-        st.pyplot(fig)
-        plt.close(fig)
-    except Exception as e:
-        st.error(f"No se pudo generar la WordCloud: {e}")
+    textos = ' '.join(df['texto'].fillna('').astype(str).tolist())
+    fig = _fig_wordcloud(textos, max_words=80, color_func=color_por_sentimiento,
+                         stopwords=STOPWORDS_ES)
+    if fig is None:
+        st.error("No se pudo generar la WordCloud.")
+        return
+    st.pyplot(fig)
+    plt.close(fig)
 
 def _hover_tema(tema: dict) -> str:
     """Texto de hover de una burbuja del plano LDA."""
@@ -206,28 +243,15 @@ def mostrar_kpis_sentimiento(df):
             f"etiqueta 'sentimiento'</div></div>", unsafe_allow_html=True)
 
 
-def mostrar_lda_tematicas(df):
+def fig_lda_burbujas(resultado: dict) -> go.Figure:
     """
-    Análisis de temáticas con LDA representadas como burbujas en un plano 2D
-    (estilo pyLDAvis): la cercanía entre burbujas refleja la distancia entre
-    temáticas (Jensen-Shannon + MDS) y el tamaño su prevalencia.
+    Construye el plano 2D de burbujas de temáticas LDA (estilo pyLDAvis):
+    cercanía = distancia entre temas (JS + MDS), tamaño = prevalencia.
+    Reutilizable por el dashboard y el PDF.
+
+    Retorna:
+        go.Figure con las burbujas.
     """
-    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
-                "🧩 Temáticas LDA (burbujas 2D)</h4>", unsafe_allow_html=True)
-    if df.empty or 'texto' not in df.columns:
-        st.info("No hay texto para ejecutar el análisis LDA.")
-        return
-    n_textos = int(df['texto'].fillna('').astype(str).str.strip().ne('').sum())
-    if n_textos < 15:
-        st.info(f"Se necesitan al menos 15 posts con texto para LDA (hay {n_textos}).")
-        return
-    k = st.slider("Nº de temáticas (LDA)", 3, 10, 5, 1,
-                  help="Ajusta el número de temas latentes a detectar.")
-    with st.spinner("Analizando temáticas con LDA..."):
-        resultado = analizar_lda(df, n_topics=k)
-    if not resultado.get('ok'):
-        st.info(resultado.get('error', 'No se pudo ejecutar el análisis LDA.'))
-        return
     temas = resultado['temas']
     colores = px.colors.qualitative.Safe
     fig = go.Figure()
@@ -249,37 +273,143 @@ def mostrar_lda_tematicas(df):
         margin=dict(l=10, r=10, t=10, b=10),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Cercanía entre burbujas = distancia entre temáticas (JS + MDS); "
-               "tamaño = prevalencia del tema en los posts.")
-    with st.expander("🔎 Palabras clave por temática"):
-        for t in temas:
-            st.markdown(f"**Tema {t['id']}** · prevalencia {t['prevalencia'] * 100:.1f}%  \n"
-                        f"`{' · '.join(t['palabras'])}`")
+    return fig
 
 
-def mostrar_alcance_temas(df):
+@st.cache_data(show_spinner=False, max_entries=16)
+def _lda_cached(df, k: int) -> dict:
+    """Analiza LDA (cacheado por dataframe sanitizado + nº de temáticas)."""
+    return analizar_lda(df, n_topics=int(k))
+
+
+def _tarjeta_tema(tema: dict) -> str:
+    """HTML de una tarjeta compacta con las palabras clave de un tema LDA."""
+    return (
+        f"<div style='border:1px solid #e2e8f0;border-radius:10px;padding:8px;"
+        f"margin-bottom:8px;background:#f8fafc;'>"
+        f"<div style='font-weight:600;font-size:12px;color:#059669;'>"
+        f"Tema {tema['id']} · prevalencia {tema['prevalencia'] * 100:.1f}%</div>"
+        f"<div style='font-size:11px;color:#334155;'>"
+        f"{' · '.join(tema['palabras'])}</div></div>"
+    )
+
+
+def mostrar_lda_tematicas(df):
     """
-    Barra horizontal con el alcance aproximado (suma de vistas) por tema
-    electoral. Facebook/Instagram (CSV manual) no traen vistas y aportan 0.
+    Análisis de temáticas con LDA representadas como burbujas en un plano 2D
+    (estilo pyLDAvis). Muestra las burbujas a la izquierda y, a un lado, las
+    tarjetas visibles con las palabras clave de cada tema.
+
+    Retorna:
+        dict resultado de `analizar_lda` (o None si no fue posible) para
+        reutilizarlo en el alcance por tema y en el PDF.
     """
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
-                "🎯 Alcance estimado por tema</h4>", unsafe_allow_html=True)
-    agrupado = alcance_por_tema(df)
-    if agrupado.empty:
-        st.info("No hay datos de alcance por tema.")
-        return
-    agrupado = agrupado.sort_values('alcance', ascending=True)
-    fig = px.bar(agrupado, x='alcance', y='tema_electoral', orientation='h',
+                "🧩 Temáticas LDA (burbujas 2D)</h4>", unsafe_allow_html=True)
+    if df.empty or 'texto' not in df.columns:
+        st.info("No hay texto para ejecutar el análisis LDA.")
+        return None
+    n_textos = int(df['texto'].fillna('').astype(str).str.strip().ne('').sum())
+    if n_textos < 15:
+        st.info(f"Se necesitan al menos 15 posts con texto para LDA (hay {n_textos}).")
+        return None
+    k = st.slider("Nº de temáticas (LDA)", 3, 10, 5, 1,
+                  help="Ajusta el número de temas latentes a detectar.")
+    with st.spinner("Analizando temáticas con LDA..."):
+        resultado = _lda_cached(_df_para_cache(df), k)
+    if not resultado.get('ok'):
+        st.info(resultado.get('error', 'No se pudo ejecutar el análisis LDA.'))
+        return None
+
+    col_izq, col_der = st.columns([1.6, 1.0])
+    with col_izq:
+        fig = fig_lda_burbujas(resultado)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Cercanía entre burbujas = distancia entre temáticas (JS + MDS); "
+                   "tamaño = prevalencia del tema en los posts.")
+    with col_der:
+        st.caption("Palabras clave por temática")
+        for t in resultado['temas']:
+            st.markdown(_tarjeta_tema(t), unsafe_allow_html=True)
+    return resultado
+
+
+def fig_barras_alcance(datos, y_col: str) -> go.Figure:
+    """
+    Barra horizontal de alcance (suma de vistas) por tema. Si `datos` trae la
+    columna 'palabras', se muestran en el hover.
+
+    Retorna:
+        go.Figure o None si no hay datos.
+    """
+    if datos is None or datos.empty:
+        return None
+    d = datos.sort_values('alcance', ascending=True)
+    fig = px.bar(d, x='alcance', y=y_col, orientation='h',
                  color='alcance', color_continuous_scale='Blues',
                  labels={'alcance': 'Alcance aprox. (vistas)',
-                         'tema_electoral': 'Tema'})
+                         y_col: 'Tema'})
     fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=340,
                       showlegend=False)
     fig.update_coloraxes(showscale=False)
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Alcance ≈ suma de vistas (plays TikTok + view_count X). "
+    if 'palabras' in d.columns:
+        fig.update_traces(
+            customdata=d['palabras'].fillna('').astype(str),
+            hovertemplate='<b>%{y}</b><br>Alcance: %{x:,.0f}<br>'
+                          'Palabras: %{customdata}<extra></extra>')
+    return fig
+
+
+def mostrar_alcance_temas(df, resultado_lda=None):
+    """
+    Barra horizontal con el alcance aproximado (suma de vistas). Prioriza los
+    temas del análisis LDA (asignación dominante) y, si no está disponible,
+    degrada a las categorías por palabras clave.
+    """
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
+                "🎯 Alcance estimado por tema</h4>", unsafe_allow_html=True)
+    agrupado = alcance_por_tema_lda(df, resultado_lda) if (resultado_lda or {}).get('ok') \
+        else pd.DataFrame()
+    if agrupado.empty:
+        agrupado = alcance_por_tema(df)
+        if agrupado.empty:
+            st.info("No hay datos de alcance por tema.")
+            return
+        agrupado['tema_lda'] = agrupado['tema_electoral']
+        agrupado['palabras'] = ''
+        fig = fig_barras_alcance(agrupado, 'tema_lda')
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+        st.caption("Alcance ≈ suma de vistas. LDA no disponible con los datos "
+                   "actuales; se usan las categorías por palabras clave. Las "
+                   "redes sin métrica de audiencia (FB/IG manual) aportan 0.")
+        return
+    fig = fig_barras_alcance(agrupado, 'tema_lda')
+    if fig is not None:
+        st.plotly_chart(fig, use_container_width=True)
+    st.caption("Alcance ≈ suma de vistas por temática LDA (asignación dominante). "
                "Las redes sin métrica de audiencia (FB/IG manual) aportan 0.")
+
+
+def fig_top_palabras(df) -> go.Figure:
+    """
+    Construye la figura del Top 15 de palabras más repetidas (sin stopwords).
+    Reutilizable por el dashboard y el PDF.
+
+    Retorna:
+        go.Figure o None si no hay palabras.
+    """
+    frecuencias = frecuencia_palabras(df, n=15)
+    if frecuencias.empty:
+        return None
+    frecuencias = frecuencias.sort_values('frecuencia', ascending=True)
+    fig = px.bar(frecuencias, x='frecuencia', y='palabra', orientation='h',
+                 color='frecuencia', color_continuous_scale='Greens',
+                 labels={'frecuencia': 'Frecuencia', 'palabra': 'Palabra'})
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=420,
+                      showlegend=False)
+    fig.update_coloraxes(showscale=False)
+    return fig
 
 
 def mostrar_top_palabras(df):
@@ -289,24 +419,17 @@ def mostrar_top_palabras(df):
     """
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
                 "🏅 Top 15 palabras más repetidas</h4>", unsafe_allow_html=True)
-    frecuencias = frecuencia_palabras(df, n=15)
-    if frecuencias.empty:
+    fig = fig_top_palabras(df)
+    if fig is None:
         st.info("No hay palabras suficientes para graficar.")
         return
-    frecuencias = frecuencias.sort_values('frecuencia', ascending=True)
-    fig = px.bar(frecuencias, x='frecuencia', y='palabra', orientation='h',
-                 color='frecuencia', color_continuous_scale='Greens',
-                 labels={'frecuencia': 'Frecuencia', 'palabra': 'Palabra'})
-    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=420,
-                      showlegend=False)
-    fig.update_coloraxes(showscale=False)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def mostrar_nube_menciones(df):
     """
     Nube de palabras con los @usuarios mencionados en los posts (todas las
-    redes).
+    redes); el tamaño respeta el número de menciones reales.
     """
     st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
                 "👥 Usuarios mencionados en los posts</h4>", unsafe_allow_html=True)
@@ -314,18 +437,34 @@ def mostrar_nube_menciones(df):
     if menciones.empty:
         st.info("No hay @usuarios mencionados en los posts.")
         return
-    texto_menciones = ' '.join(menciones['usuario'].astype(str).tolist())
-    try:
-        wc = WordCloud(width=800, height=400, background_color='white',
-                       max_words=60, random_state=42, collocations=False,
-                       min_font_size=8).generate(texto_menciones)
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.imshow(wc, interpolation='bilinear')
-        ax.axis('off')
-        st.pyplot(fig)
-        plt.close(fig)
-    except Exception as e:
-        st.error(f"No se pudo generar la nube de menciones: {e}")
+    frecuencias = dict(zip(menciones['usuario'].astype(str), menciones['menciones'].astype(int)))
+    fig = _fig_wordcloud(frecuencias=frecuencias, max_words=60, min_font_size=8)
+    if fig is None:
+        st.info("No hay @usuarios mencionados en los posts.")
+        return
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def mostrar_nube_hashtags(df):
+    """
+    Nube de palabras con los hashtags presentes en los posts (todas las
+    redes); el tamaño respeta la frecuencia real de cada hashtag.
+    """
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>"
+                "🏷️ Hashtags en los posts</h4>", unsafe_allow_html=True)
+    hashtags = frecuencia_hashtags(df)
+    if hashtags.empty:
+        st.info("No hay hashtags en los posts.")
+        return
+    frecuencias = dict(zip('#' + hashtags['hashtag'].astype(str),
+                           hashtags['frecuencia'].astype(int)))
+    fig = _fig_wordcloud(frecuencias=frecuencias, max_words=60, min_font_size=8)
+    if fig is None:
+        st.info("No hay hashtags en los posts.")
+        return
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def _tabla_pdf(datos: list, anchos: list):
@@ -353,30 +492,75 @@ def _tabla_pdf(datos: list, anchos: list):
     return tabla
 
 
-def _imagen_pdf_donut(resumen: dict):
+def _png_plotly(fig, width: int = 1100, height: int = 360):
     """
-    Donut de distribución de sentimiento como imagen PNG (BytesIO) para el PDF.
+    Convierte una figura Plotly a PNG (motor kaleido) en BytesIO para el PDF.
 
     Retorna:
-        BytesIO o None si no hay datos de sentimiento.
+        BytesIO o None si la conversión falla.
     """
     from io import BytesIO
-    import matplotlib.pyplot as plt
-    valores = [resumen['positivos'], resumen['neutrales'], resumen['negativos']]
-    if not any(valores):
+    if fig is None:
         return None
-    fig, ax = plt.subplots(figsize=(3.4, 2.0), dpi=140)
-    ax.pie(valores, labels=['Positivo', 'Neutral', 'Negativo'],
-           colors=['#10b981', '#f59e0b', '#ef4444'],
-           startangle=90, counterclock=False,
-           wedgeprops=dict(width=0.45),
-           autopct=lambda p: f'{p:.0f}%', textprops={'fontsize': 7})
-    ax.set_aspect('equal')
+    try:
+        return BytesIO(fig.to_image(format='png', width=width, height=height, scale=2))
+    except Exception as e:
+        print(f'PDF: no se pudo rasterizar la figura ({e})')
+        return None
+
+
+def _png_matplotlib(fig_plt):
+    """
+    Convierte una Figura de matplotlib a PNG (BytesIO) para el PDF, cerrando
+    la figura al terminar.
+
+    Retorna:
+        BytesIO o None si la conversión falla.
+    """
+    from io import BytesIO
+    if fig_plt is None:
+        return None
     buf = BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight', transparent=True)
-    plt.close(fig)
+    try:
+        fig_plt.savefig(buf, format='png', dpi=160, bbox_inches='tight')
+    except Exception as e:
+        print(f'PDF: no se pudo guardar la gráfica matplotlib ({e})')
+        return None
+    finally:
+        plt.close(fig_plt)
     buf.seek(0)
     return buf
+
+
+def _flujo_imagen(buf, max_width: int = 520):
+    """
+    Convierte un PNG (BytesIO) en un flowable Image de reportlab preservando
+    la proporción (aspect) de la imagen original.
+
+    Retorna:
+        reportlab Image o None si no hay PNG.
+    """
+    from PIL import Image as PILImage
+    from reportlab.platypus import Image as RLImage
+    if buf is None:
+        return None
+    buf.seek(0)
+    try:
+        with PILImage.open(buf) as im:
+            w, h = im.size
+    except Exception as e:
+        print(f'PDF: no se pudo leer la imagen ({e})')
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    aspect = h / w
+    width = min(max_width, w)
+    height = width * aspect
+    if height > 700:
+        height = 700
+        width = height / aspect
+    buf.seek(0)
+    return RLImage(buf, width=width, height=height)
 
 
 def _df_para_cache(df: pd.DataFrame) -> pd.DataFrame:
@@ -395,12 +579,13 @@ def _df_para_cache(df: pd.DataFrame) -> pd.DataFrame:
     return copia
 
 
-@st.cache_data(show_spinner=False, max_entries=12)
-def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '') -> bytes:
+@st.cache_data(show_spinner=False, max_entries=8)
+def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
+                           k_lda: int = 0) -> bytes:
     """
-    Genera un PDF (reportlab + minigráficos matplotlib) con los resultados del
-    dashboard: KPIs, distribución por red, sentimiento, alcance por tema,
-    palabras más repetidas y menciones. Se cachea por contenido del DataFrame.
+    Genera un PDF con las MISMAS gráficas del dashboard (Plotly → PNG vía
+    kaleido; nubes de matplotlib → PNG) más las tablas resumen (KPIs, temas
+    LDA y últimas publicaciones). Se cachea por contenido del DataFrame.
 
     Retorna:
         bytes del PDF listo para `st.download_button`.
@@ -416,8 +601,8 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '') -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import (HRFlowable, Image, Paragraph,
-                                    SimpleDocTemplate, Spacer)
+    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                    Spacer)
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=16 * mm,
@@ -432,6 +617,19 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '') -> bytes:
     cuerpo = ParagraphStyle('Cuerpo', parent=estilos['BodyText'], fontSize=9,
                             leading=12)
     historia = []
+
+    def _imagen(fig_plotly=None, fig_mpl=None, width=1100, height=360,
+                max_width=520):
+        """Añade la imagen (Plotly o matplotlib) a `historia`, si hay figura."""
+        flujo = None
+        if fig_plotly is not None:
+            flujo = _flujo_imagen(_png_plotly(fig_plotly, width=width, height=height),
+                                  max_width=max_width)
+        elif fig_mpl is not None:
+            flujo = _flujo_imagen(_png_matplotlib(fig_mpl), max_width=max_width)
+        if flujo is not None:
+            historia.append(Spacer(1, 4))
+            historia.append(flujo)
 
     historia.append(Paragraph('Dashboard de Redes Sociales — Tlalpan 2027', titulo))
     historia.append(Paragraph(f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
@@ -461,87 +659,126 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '') -> bytes:
          f"{resumen['promedio']:+.2f}"],
         ['Positivos', str(resumen['positivos']), 'Negativos', str(resumen['negativos'])],
     ], [90, 110, 110, 110]))
-    imagen = _imagen_pdf_donut(resumen)
-    if imagen:
-        historia.append(Spacer(1, 6))
-        historia.append(Image(imagen, width=150, height=88))
 
-    # --- Distribución por red ---
-    if not df.empty and 'red_social' in df.columns:
-        historia.append(Paragraph('Distribución por red social', h2))
-        agg = [('posts', 'red_social', 'size')]
-        for col, nombre in (('likes', 'likes'), ('comentarios', 'comentarios'),
-                            ('compartidos', 'compartidos'), ('vistas', 'vistas')):
-            agg.append((nombre, col, 'sum') if col in df.columns else (nombre, 'red_social', 'size'))
-        por_red = df.groupby('red_social', dropna=False).agg(**{
-            k: (c, op) for k, c, op in agg}).reset_index()
-        filas = [['Red social', 'Posts', 'Likes', 'Com.', 'Compart.', 'Vistas']]
-        for _, r in por_red.iterrows():
-            filas.append([str(r['red_social']),
-                          f"{int(r['posts']):,}", f"{int(r['likes']):,}",
-                          f"{int(r['comentarios']):,}", f"{int(r['compartidos']):,}",
-                          f"{int(r['vistas']):,}"])
-        historia.append(_tabla_pdf(filas, [90, 55, 70, 70, 80, 80]))
+    # --- Distribución por red (gráfica del dashboard) ---
+    historia.append(Paragraph('Distribución por red social', h2))
+    _imagen(fig_plotly=fig_distribucion_redes(df), width=900, height=340)
 
-    # --- Alcance por tema ---
-    alcance = alcance_por_tema(df)
-    if not alcance.empty:
-        historia.append(Paragraph('Alcance estimado por tema (suma de vistas)', h2))
-        filas = [['Tema', 'Posts', 'Alcance (vistas)', 'Engagement']]
-        for _, r in alcance.iterrows():
-            filas.append([str(r['tema_electoral']), f"{int(r['n_posts']):,}",
-                          f"{int(r['alcance']):,}", f"{int(r['engagement']):,}"])
-        historia.append(_tabla_pdf(filas, [150, 60, 110, 110]))
+    # --- Evolución temporal ---
+    historia.append(Paragraph('Evolución de interacciones', h2))
+    _imagen(fig_plotly=fig_evolucion_temporal(df), width=1100, height=360)
 
-    # --- Top palabras y menciones ---
-    frecuencias = frecuencia_palabras(df, n=15)
-    if not frecuencias.empty:
-        historia.append(Paragraph('Top 15 palabras más repetidas', h2))
-        filas = [['#', 'Palabra', 'Frecuencia']]
-        for i, (_, r) in enumerate(frecuencias.iterrows(), start=1):
-            filas.append([str(i), str(r['palabra']), f"{int(r['frecuencia']):,}"])
-        historia.append(_tabla_pdf(filas, [35, 220, 100]))
+    # --- Temáticas LDA (mismas burbujas del dashboard) ---
+    resultado_lda = None
+    if k_lda:
+        resultado_lda = analizar_lda(df, n_topics=int(k_lda))
+    if resultado_lda and resultado_lda.get('ok'):
+        historia.append(Paragraph('Temáticas LDA (burbujas 2D)', h2))
+        _imagen(fig_plotly=fig_lda_burbujas(resultado_lda), width=1100, height=420)
+        filas = [['Tema', 'Prevalencia', 'Palabras clave']]
+        for t in resultado_lda['temas']:
+            filas.append([f"Tema {t['id']}", f"{t['prevalencia'] * 100:.1f}%",
+                          ', '.join(t['palabras'])])
+        historia.append(_tabla_pdf(filas, [60, 70, 370]))
+
+    # --- Alcance por tema (LDA con fallback a categorías) ---
+    historia.append(Paragraph('Alcance estimado por tema (suma de vistas)', h2))
+    if resultado_lda and resultado_lda.get('ok'):
+        agrupado_alcance = alcance_por_tema_lda(df, resultado_lda)
+        _imagen(fig_plotly=fig_barras_alcance(agrupado_alcance, 'tema_lda'),
+                width=1100, height=360)
+    else:
+        agrupado_alcance = alcance_por_tema(df)
+        if not agrupado_alcance.empty:
+            agrupado_alcance['tema_lda'] = agrupado_alcance['tema_electoral']
+            agrupado_alcance['palabras'] = ''
+            _imagen(fig_plotly=fig_barras_alcance(agrupado_alcance, 'tema_lda'),
+                    width=1100, height=360)
+
+    # --- Nube de temas ---
+    if not df.empty and 'texto' in df.columns:
+        historia.append(Paragraph('Nube de temas (por sentimiento)', h2))
+        _imagen(fig_mpl=_fig_wordcloud(
+            ' '.join(df['texto'].fillna('').astype(str).tolist()),
+            max_words=80, color_func=color_por_sentimiento,
+            stopwords=STOPWORDS_ES))
+
+    # --- Top palabras ---
+    historia.append(Paragraph('Top 15 palabras más repetidas', h2))
+    _imagen(fig_plotly=fig_top_palabras(df), width=1100, height=440)
+
+    # --- Nube de menciones ---
     menciones = extraer_menciones(df)
     if not menciones.empty:
-        historia.append(Paragraph('Usuarios mencionados (top 10)', h2))
-        filas = [['#', 'Usuario', 'Menciones']]
-        for i, (_, r) in enumerate(menciones.head(10).iterrows(), start=1):
-            filas.append([str(i), str(r['usuario']), f"{int(r['menciones']):,}"])
-        historia.append(_tabla_pdf(filas, [35, 200, 120]))
+        historia.append(Paragraph('Usuarios mencionados', h2))
+        _imagen(fig_mpl=_fig_wordcloud(
+            frecuencias=dict(zip(menciones['usuario'].astype(str),
+                                 menciones['menciones'].astype(int))),
+            max_words=60, min_font_size=8))
+
+    # --- Nube de hashtags ---
+    hashtags = frecuencia_hashtags(df)
+    if not hashtags.empty:
+        historia.append(Paragraph('Hashtags en los posts', h2))
+        _imagen(fig_mpl=_fig_wordcloud(
+            frecuencias=dict(zip('#' + hashtags['hashtag'].astype(str),
+                                 hashtags['frecuencia'].astype(int))),
+            max_words=60, min_font_size=8))
+
+    # --- Tendencia de sentimiento ---
+    historia.append(Paragraph('Tendencia de sentimiento en el tiempo', h2))
+    _imagen(fig_plotly=fig_sentimiento_temporal(df), width=1100, height=360)
+
+    # --- Últimas publicaciones (resumen tabular) ---
+    if not df.empty:
+        historia.append(Paragraph('Últimas publicaciones (resumen)', h2))
+        df_ult = df.sort_values('fecha', ascending=False, na_position='last') \
+            .head(10) if 'fecha' in df.columns else df.head(10)
+        filas = [['Fecha', 'Red', 'Texto', 'Likes']]
+        for _, r in df_ult.iterrows():
+            fecha = 'Sin fecha'
+            try:
+                if pd.notna(r.get('fecha')):
+                    fecha = pd.Timestamp(r['fecha']).strftime('%Y-%m-%d %H:%M')
+            except (TypeError, ValueError):
+                fecha = 'Sin fecha'
+            texto = str(r.get('texto', ''))[:60].replace('\n', ' ')
+            filas.append([fecha, str(r.get('red_social', '')), texto,
+                          f"{int(r.get('likes') or 0)}"])
+        historia.append(_tabla_pdf(filas, [95, 60, 270, 45]))
 
     doc.build(historia)
     buffer.seek(0)
     return buffer.getvalue()
 
-def mostrar_sentimiento_temporal(df):
+def fig_sentimiento_temporal(df) -> go.Figure:
     """
-    Muestra la tendencia del sentimiento (positivo/negativo/neutral) en el tiempo con un gráfico de área.
+    Construye la tendencia del sentimiento en el tiempo (positivo/negativo/
+    neutral) como gráfico de área. Reutilizable por el dashboard y el PDF.
+
+    Retorna:
+        go.Figure o None si no hay datos con fecha.
     """
-    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📈 Tendencia de Sentimiento en el Tiempo</h4>", unsafe_allow_html=True)
-    if df.empty:
-        st.info("Sin datos de sentimientos en el rango seleccionado.")
-        return
-    # Posts sin fecha (Facebook manual) se excluyen del análisis temporal
-    df = df[df['fecha'].notna()]
-    if df.empty:
-        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
-                "pueden graficar en la tendencia de sentimiento.")
-        return
-        
-    # Agrupar por día y sentimiento
-    df_sentiment = df.groupby([df['fecha'].dt.date, 'sentimiento']).size().reset_index(name='count')
+    if df is None or df.empty or 'sentimiento' not in df.columns or 'fecha' not in df.columns:
+        return None
+    d = df[df['fecha'].notna()]
+    if d.empty:
+        return None
+    df_sentiment = d.groupby([d['fecha'].dt.date, 'sentimiento']).size() \
+        .reset_index(name='count')
     df_sentiment.columns = ['Fecha', 'Sentimiento', 'Cantidad']
     df_sentiment = df_sentiment.sort_values(by='Fecha')
-    
+    if df_sentiment.empty:
+        return None
     fig = px.area(
-        df_sentiment, 
-        x='Fecha', 
-        y='Cantidad', 
+        df_sentiment,
+        x='Fecha',
+        y='Cantidad',
         color='Sentimiento',
         color_discrete_map={
-            'positivo': '#10b981',  # Verde
-            'negativo': '#ef4444',  # Rojo
-            'neutral': '#f59e0b'   # Amarillo
+            'positivo': '#10b981',
+            'negativo': '#ef4444',
+            'neutral': '#f59e0b'
         }
     )
     fig.update_layout(
@@ -549,23 +786,46 @@ def mostrar_sentimiento_temporal(df):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         height=320
     )
+    return fig
+
+
+def mostrar_sentimiento_temporal(df):
+    """
+    Muestra la tendencia del sentimiento (positivo/negativo/neutral) en el
+    tiempo con un gráfico de área.
+    """
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📈 Tendencia de Sentimiento en el Tiempo</h4>", unsafe_allow_html=True)
+    if df.empty:
+        st.info("Sin datos de sentimientos en el rango seleccionado.")
+        return
+    if 'fecha' not in df.columns or df['fecha'].notna().sum() == 0:
+        st.info("Los datos cargados no tienen fecha (Facebook manual) y no se "
+                "pueden graficar en la tendencia de sentimiento.")
+        return
+    fig = fig_sentimiento_temporal(df)
+    if fig is None:
+        st.info("Sin datos de sentimientos en el rango seleccionado.")
+        return
     st.plotly_chart(fig, use_container_width=True)
 
-def mostrar_distribucion_redes(df):
+
+def fig_distribucion_redes(df) -> go.Figure:
     """
-    Muestra el porcentaje de posts distribuidos por canal de red social.
+    Construye el gráfico de pastel con la distribución de posts por red social.
+    Solo pinta las redes presentes en los datos. Reutilizable por el PDF.
+
+    Retorna:
+        go.Figure o None si no hay datos.
     """
-    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📱 Distribución por Red Social</h4>", unsafe_allow_html=True)
-    if df.empty:
-        st.info("Sin datos de canales sociales.")
-        return
-        
+    if df is None or df.empty or 'red_social' not in df.columns:
+        return None
     redes = df['red_social'].value_counts().reset_index()
     redes.columns = ['Red Social', 'Cantidad']
-    
+    if redes.empty:
+        return None
     fig = px.pie(
-        redes, 
-        values='Cantidad', 
+        redes,
+        values='Cantidad',
         names='Red Social',
         color='Red Social',
         color_discrete_map={
@@ -579,6 +839,18 @@ def mostrar_distribucion_redes(df):
         margin=dict(l=10, r=10, t=10, b=10),
         height=320
     )
+    return fig
+
+
+def mostrar_distribucion_redes(df):
+    """
+    Muestra el porcentaje de posts distribuidos por canal de red social.
+    """
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 5px;'>📱 Distribución por Red Social</h4>", unsafe_allow_html=True)
+    fig = fig_distribucion_redes(df)
+    if fig is None:
+        st.info("Sin datos de canales sociales.")
+        return
     st.plotly_chart(fig, use_container_width=True)
 
 def mostrar_ultimos_posts(df, n=10):
@@ -750,7 +1022,7 @@ def mostrar_dashboard_redes_sociales():
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        mostrar_lda_tematicas(df_filtrado)
+        resultado_lda = mostrar_lda_tematicas(df_filtrado)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with g_col2:
@@ -762,22 +1034,28 @@ def mostrar_dashboard_redes_sociales():
         mostrar_distribucion_redes(df_filtrado)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 7. Alcance por tema y top de palabras
+    # 7. Alcance por tema (LDA) y top de palabras
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
     a_col1, a_col2 = st.columns(2)
     with a_col1:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        mostrar_alcance_temas(df_filtrado)
+        mostrar_alcance_temas(df_filtrado, resultado_lda)
         st.markdown('</div>', unsafe_allow_html=True)
     with a_col2:
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
         mostrar_top_palabras(df_filtrado)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 8. Nube de usuarios mencionados
-    st.markdown('<div class="info-card">', unsafe_allow_html=True)
-    mostrar_nube_menciones(df_filtrado)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # 8. Nubes de usuarios mencionados y hashtags
+    n_col1, n_col2 = st.columns(2)
+    with n_col1:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        mostrar_nube_menciones(df_filtrado)
+        st.markdown('</div>', unsafe_allow_html=True)
+    with n_col2:
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
+        mostrar_nube_hashtags(df_filtrado)
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # 9. Sección de tendencias temporales y tabla detallada
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
@@ -805,14 +1083,16 @@ def mostrar_dashboard_redes_sociales():
     if isinstance(rango_fechas, (tuple, list)) and len(rango_fechas) == 2:
         partes_filtro.append(f"fechas: {rango_fechas[0]} a {rango_fechas[1]}")
     nota_filtros = ', '.join(partes_filtro) if partes_filtro else 'sin filtros'
+    k_lda = len(resultado_lda['temas']) if resultado_lda else 0
     st.download_button(
         label="📄 Descargar PDF de los resultados del dashboard",
-        data=exportar_dashboard_pdf(_df_para_cache(df_filtrado), nota_filtros),
+        data=exportar_dashboard_pdf(_df_para_cache(df_filtrado), nota_filtros, k_lda),
         file_name=f"dashboard_redes_tlalpan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
         mime='application/pdf',
         use_container_width=True,
         key='btn_exportar_pdf',
     )
-    st.caption("El PDF incluye KPIs, distribución por red, sentimiento, alcance "
-               "por tema, top de palabras y menciones con los filtros actuales.")
+    st.caption("El PDF incluye exactamente las gráficas del dashboard (burbujas "
+               "LDA, alcance por tema, nubes, tendencias) más las tablas resumen "
+               "de KPIs y últimas publicaciones, con los filtros actuales.")
     st.markdown('</div>', unsafe_allow_html=True)

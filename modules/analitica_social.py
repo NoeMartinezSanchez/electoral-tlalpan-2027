@@ -11,12 +11,15 @@ Incluye:
     - resumen_sentimiento -> KPIs de sentimiento (positivo/negativo/promedio).
     - alcance_por_tema    -> alcance aproximado (suma de vistas) por tema.
     - frecuencia_palabras -> palabras más repetidas (top N).
+    - frecuencia_hashtags -> hashtags más repetidos (top N).
     - extraer_menciones   -> @usuarios mencionados en los textos.
     - analizar_lda        -> temáticas LDA con proyección 2D (MDS) tipo pyLDAvis.
+    - alcance_por_tema_lda-> alcance por temática LDA (asignación dominante).
 """
 
 import re
 from collections import Counter
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -39,6 +42,7 @@ STOPWORDS_ES = {
 SCORE_SENTIMIENTO = {'positivo': 1.0, 'neutral': 0.0, 'negativo': -1.0}
 
 _MENCION_RE = re.compile(r'@([A-Za-z0-9_\.]{2,})')
+_HASHTAG_RE = re.compile(r'#([\wáéíóúüñ]{2,})')
 _TOKEN_RE = re.compile(r'[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,}')
 
 
@@ -144,6 +148,27 @@ def frecuencia_palabras(df: pd.DataFrame, n: int = 15) -> pd.DataFrame:
     return pd.DataFrame(contador.most_common(int(n)), columns=columnas)
 
 
+def frecuencia_hashtags(df: pd.DataFrame, n: int = 50) -> pd.DataFrame:
+    """
+    Cuenta los hashtags presentes en el texto de los posts y devuelve el top N.
+    Si hay pocos hashtags se devuelven todos (la nube funciona igual).
+
+    Retorna:
+        pd.DataFrame con 'hashtag' (sin '#') y 'frecuencia', ordenado desc
+        (vacío si no hay hashtags o texto).
+    """
+    columnas = ['hashtag', 'frecuencia']
+    if df is None or df.empty or 'texto' not in df.columns:
+        return pd.DataFrame(columns=columnas)
+    contador = Counter()
+    for texto in df['texto'].dropna().astype(str):
+        for h in _HASHTAG_RE.findall(texto):
+            contador[h.lower()] += 1
+    if not contador:
+        return pd.DataFrame(columns=columnas)
+    return pd.DataFrame(contador.most_common(int(n)), columns=columnas)
+
+
 def extraer_menciones(df: pd.DataFrame) -> pd.DataFrame:
     """
     Extrae los @usuarios mencionados en el texto de los posts y los agrupa
@@ -185,7 +210,11 @@ def _distancia_js(p: np.ndarray, q: np.ndarray) -> float:
     m = 0.5 * (p + q)
     def kl(a, b):
         return float(np.sum(a * np.log(a / b)))
-    return float(np.sqrt(0.5 * kl(p, m) + 0.5 * kl(q, m)))
+    divergencia = 0.5 * kl(p, m) + 0.5 * kl(q, m)
+    # Guarda contra redondeo de punto flotante que deja un valor ~-1e-16.
+    if divergencia < 0:
+        divergencia = 0.0
+    return float(np.sqrt(divergencia))
 
 
 def _matriz_distancia_js(theta: np.ndarray) -> np.ndarray:
@@ -215,9 +244,11 @@ def analizar_lda(df: pd.DataFrame, n_topics: int = 5, max_features: int = 5000,
     (MDS). El radio de la burbuja se deriva de la prevalencia del tema.
 
     Retorna:
-        dict con 'ok' (bool) y, si funciona, 'n_posts' y 'temas' (lista con
-        'id', 'palabras' [top 8], 'prevalencia', 'x', 'y'); si no, 'error'
-        (str) para degradación elegante en la UI.
+        dict con 'ok' (bool) y, si funciona, 'n_posts', 'temas' (lista con
+        'id', 'palabras' [top 8], 'prevalencia', 'x', 'y') y 'doc_topico'
+        (pd.Series alineada a `df.index` con el tema dominante 0..k-1 por fila,
+        o -1 en filas sin texto); si no, 'error' (str) para degradación
+        elegante en la UI.
     """
     resultado_error = lambda msg: {'ok': False, 'error': msg}  # noqa: E731
     if df is None or df.empty or 'texto' not in df.columns:
@@ -247,6 +278,11 @@ def analizar_lda(df: pd.DataFrame, n_topics: int = 5, max_features: int = 5000,
         lda = LatentDirichletAllocation(n_components=n_topics, random_state=random_state,
                                         max_iter=int(max_iter))
         phi = lda.fit_transform(matriz)  # distribución documento -> tema
+        # Asignación del tema dominante por post (alineado al índice original;
+        # las filas sin texto quedan en -1).
+        dominante = phi.argmax(axis=1)
+        doc_topico = pd.Series(np.full(len(df), -1, dtype=int), index=df.index)
+        doc_topico.loc[textos.index] = dominante
         componentes = lda.components_    # (k, vocabulario) conteos crudos
         suma = componentes.sum(axis=1, keepdims=True)
         suma[suma == 0] = 1.0
@@ -271,7 +307,60 @@ def analizar_lda(df: pd.DataFrame, n_topics: int = 5, max_features: int = 5000,
             tema['x'] = float(x)
             tema['y'] = float(y)
 
-        return {'ok': True, 'n_posts': int(len(textos)), 'temas': temas}
+        return {'ok': True, 'n_posts': int(len(textos)),
+                'temas': temas, 'doc_topico': doc_topico}
     except Exception as e:
         print(f'ANALITICA_SOCIAL: LDA falló -> {e}')
         return resultado_error(f'No se pudo ejecutar el análisis LDA: {e}')
+
+
+def alcance_por_tema_lda(df: pd.DataFrame, resultado: Optional[dict]) -> pd.DataFrame:
+    """
+    Agrega el alcance aproximado (suma de vistas) y el engagement **por tema
+    LDA**, asignando cada post a su temática dominante (`doc_topico` del
+    resultado de `analizar_lda`). La gráfica se acopla dinámicamente a los
+    temas encontrados (los mismos del plano de burbujas).
+
+    Retorna:
+        pd.DataFrame con 'tema_lda' (etiqueta "Tema N"), 'palabras'
+        (top del tema), 'n_posts', 'alcance' y 'engagement', ordenado por
+        alcance desc. Vacío si no hay LDA válido o el df no lo soporta.
+    """
+    columnas = ['tema_lda', 'palabras', 'n_posts', 'alcance', 'engagement']
+    if df is None or df.empty or 'texto' not in df.columns:
+        return pd.DataFrame(columns=columnas)
+    if not resultado or not resultado.get('ok'):
+        return pd.DataFrame(columns=columnas)
+    doc_topico = resultado.get('doc_topico')
+    if doc_topico is None or len(doc_topico) != len(df):
+        return pd.DataFrame(columns=columnas)
+    temas_por_id = {t['id']: t for t in resultado.get('temas', [])}
+
+    datos = df.copy()
+    datos['_tema'] = doc_topico.values
+    datos['_vistas'] = datos['vistas'] if 'vistas' in datos.columns else 0
+    datos['_eng'] = (datos['likes'] if 'likes' in datos.columns else 0)
+    if 'comentarios' in datos.columns:
+        datos['_eng'] = datos['_eng'] + datos['comentarios']
+    if 'compartidos' in datos.columns:
+        datos['_eng'] = datos['_eng'] + datos['compartidos']
+    base_size = 'tema_electoral' if 'tema_electoral' in datos.columns else 'texto'
+
+    agrupado = datos.groupby('_tema', dropna=False).agg(
+        n_posts=(base_size, 'size'),
+        alcance=('_vistas', 'sum'),
+        engagement=('_eng', 'sum'),
+    ).reset_index()
+
+    def _info(tema_idx: int):
+        if tema_idx == -1:
+            return 'Sin texto', ''
+        tema = temas_por_id.get(int(tema_idx) + 1)
+        if not tema:
+            return f'Tema {int(tema_idx) + 1}', ''
+        return (f"Tema {tema['id']}", ', '.join(tema['palabras']))
+
+    info = agrupado['_tema'].map(_info)
+    agrupado['tema_lda'] = [i[0] for i in info]
+    agrupado['palabras'] = [i[1] for i in info]
+    return agrupado[columnas].sort_values('alcance', ascending=False).reset_index(drop=True)
