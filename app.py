@@ -240,7 +240,7 @@ def mostrar_panel_control(usar_real: bool):
                                'demo': '🎲 Demo (simular)'}[m],
         horizontal=True,
         key='modo_campo',
-        value='auto',
+        index=0,   # 'auto' es la opción de índice 0
         help="Auto usa registro real si MongoDB está conectado; si no, cae a demo.",
     )
     usar_real = ((st.session_state.get('modo_campo', 'auto') == 'real')
