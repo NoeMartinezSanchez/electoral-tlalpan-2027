@@ -12,3 +12,6 @@
 # remoto puro con la variable de entorno:
 #   PLAYWRIGHT_BROWSERS_PATH=0
 playwright>=1.49.0
+
+# Pruebas unitarias del dashboard de la Pestaña 2 (tests/test_analitica_social.py)
+pytest>=8.0.0
