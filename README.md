@@ -229,9 +229,11 @@ La **Pestaña 1** persiste los datos reales de la campaña en **MongoDB Atlas**
 (módulos `modules/geo.py` y `modules/datos_campo.py`):
 
 - Colección `secciones` — **355 secciones electorales de Tlalpan** importadas del
-  **Marco Geográfico Electoral del IECM 2021** (`circunscripcionesDT/12.kml`),
-  con `padron_electoral`/`lista_nominal` (corte 2021), `Población_INEGI_2010`,
-  centroide y geometría simplificada.
+  **Marco Geográfico Electoral del IECM 2021**, con `padron_electoral`/
+  `lista_nominal` (corte 2021), `Población_INEGI_2010`, centroide y geometría
+  simplificada. Los parsers prefieren los **CSVs de referencia commiteados**
+  (`referencia/marcos/*.csv`, ~220 KB) para que los botones de importación
+  funcionen en Streamlit Cloud sin `documentos/`.
 - Colección `registros_campo` — visitas / simpatías / quejas-incidencias de
   brigadistas (etiquetadas como "simpatías" e "incidencias comunitarias", sin
   datos personales, según la nota de campaña INE).

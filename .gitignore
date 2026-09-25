@@ -54,3 +54,9 @@ documentos/
 
 # Datos reales locales (cartografía INE, backups)
 data/
+
+# Datos de referencia commiteados (secciones/colonias IECM en CSV, ~220 KB)
+# Se suben a Git/Cloud para que los botones de importación funcionen sin documentos/
+!referencia/
+!referencia/**
+!referencia/**/*.csv

@@ -21,6 +21,7 @@ Pendiente (se cruzará después): vivienda y población **Censo 2020** (INEGI) p
 métricas de vivienda; el `tipo_zona` es provisional.
 """
 
+import json
 import os
 import xml.etree.ElementTree as ET
 
@@ -38,6 +39,12 @@ RUTA_KML_TLALPAN = os.path.join('documentos', 'Marco geografico electoral',
                                 'circunscripcionesDT', '12.kml')
 RUTA_SHP_COLONIAS = os.path.join('documentos', 'inegi', 'colonias_iecm.shp')
 RUTA_LOCAL_INE = os.path.join('data', 'secciones_ine.csv')
+
+# CSVs de referencia COMMITEADOS (para que funcione en Cloud sin documentos/):
+# incluyen la geometría simplificada como columna geometry_geojson (JSON en texto).
+RUTA_REF_SECCIONES = os.path.join('referencia', 'marcos', 'secciones_iecm.csv')
+RUTA_REF_COLONIAS = os.path.join('referencia', 'marcos', 'colonias_iecm.csv')
+
 TOLERANCIA_SIMPLIFICACION = 0.001  # grados (~110 m)
 
 # Columnas del DataFrame normalizado (Pestaña 1 + Mongo)
@@ -109,6 +116,10 @@ def parsear_kml_secciones(ruta: str = RUTA_KML_TLALPAN) -> pd.DataFrame:
     if not os.path.exists(ruta):
         print(f'ADVERTENCIA: no existe el KML del marco electoral: {ruta}')
         return pd.DataFrame()
+    # Preferir el CSV de referencia COMMITEADO (funciona en Cloud sin documentos/)
+    df_ref = _leer_csv_referencia(RUTA_REF_SECCIONES, 'secciones')
+    if not df_ref.empty:
+        return df_ref
     try:
         tree = ET.parse(ruta)
         root = tree.getroot()
@@ -168,6 +179,38 @@ def _leer_csv_ine(ruta: str) -> pd.DataFrame:
     raise ValueError(f'No se pudo decodificar {ruta}')
 
 
+def _columna_geometry(df: pd.DataFrame) -> pd.DataFrame:
+    """Convierte la columna geometry_geojson (JSON en texto) a dicts."""
+    if 'geometry_geojson' in df.columns:
+        def _parsea(v):
+            if isinstance(v, dict):
+                return v
+            if pd.isna(v) or not v:
+                return None
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        df['geometry_geojson'] = df['geometry_geojson'].apply(_parsea)
+    return df
+
+
+def _leer_csv_referencia(ruta: str, nombre: str) -> pd.DataFrame:
+    """
+    Lee un CSV de referencia COMMITEADO (referencia/marcos/*.csv) y convierte la
+    geometría JSON en texto a dicts. Devuelve vacío si no existe/falla.
+    """
+    if not os.path.exists(ruta):
+        print(f'ADVERTENCIA: no existe el CSV de referencia {ruta}')
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(ruta, encoding='utf-8-sig')
+        return _columna_geometry(df).reset_index(drop=True)
+    except Exception as e:
+        print(f'ADVERTENCIA: no se pudo leer {ruta}: {e}')
+        return pd.DataFrame()
+
+
 def generar_csv_ine(ruta_salida: str = RUTA_LOCAL_INE) -> dict:
     """
     Genera `data/secciones_ine.csv` (sin geometría) a partir del KML del IECM.
@@ -223,15 +266,19 @@ def cargar_secciones_ine() -> tuple:
 
 def parsear_colonias_iecm(ruta: str = RUTA_SHP_COLONIAS) -> pd.DataFrame:
     """
-    Parsea el shapefile de colonias del IECM (`documentos/inegi/colonias_iecm.shp`)
-    y devuelve las **colonias de Tlalpan** (NOMDT = TLALPAN) con: código (`CVEUT`),
-    nombre (`NOMUT`), distrito local (`DTTOLOC`), centroide (EPSG:4326), área y
-    geometría simplificada (GeoJSON).
+    Parsea las colonias del IECM y devuelve las **colonias de Tlalpan** con:
+    código (`CVEUT`), nombre (`NOMUT`), distrito local (`DTTOLOC`), centroide
+    (EPSG:4326), área y geometría simplificada (GeoJSON). Como fuente se prefiere
+    el CSV de referencia COMMITEADO (`referencia/marcos/colonias_iecm.csv`) y,
+    si no existe, el shapefile local (`documentos/inegi/colonias_iecm.shp`).
 
     Retorna:
         pd.DataFrame con las columnas de `COLUMNAS_COLONIAS` (vacío si no hay
         archivo o no se pudo leer).
     """
+    df_ref = _leer_csv_referencia(RUTA_REF_COLONIAS, 'colonias')
+    if not df_ref.empty:
+        return df_ref
     if not os.path.exists(ruta):
         print(f'ADVERTENCIA: no existe el shapefile de colonias: {ruta}')
         return pd.DataFrame()
