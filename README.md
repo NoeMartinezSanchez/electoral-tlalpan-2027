@@ -36,6 +36,12 @@ exportación de resultados sin generación sintética.
   de Tlalpan desde el shapefile del IECM; campo `colonia` opcional en el
   registro), resumen por **distrito local**, series temporales e histórico
   (Plotly), y filtros por distrito/circunscripción/colonia/categoría.
+- **Local-first + demo de datos (Etapa 2b)**: capa de datos en `data/*.csv`
+  (secciones/colonias/registros) para abrir la app y ver datos al instante, con
+  toggle **Auto/Mongo/Local/Demo** (Auto = Mongo si conecta, si no Local). Botón
+  **"🗂️ Herramientas → 🧪 Generar 500 sintéticos"** (visitas de prueba,
+  marcadas `sintetico_*`) y **"📤 Sincronizar a Mongo"** para persistir en Cloud
+  para el equipo (`sembrar_datos_sinteticos.py` en CLI).
 
 ### 2. 📊 Redes Sociales
 - Dashboard de analítica sobre posts (TikTok, X, Facebook, Instagram).

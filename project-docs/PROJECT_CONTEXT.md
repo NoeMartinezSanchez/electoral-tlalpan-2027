@@ -297,3 +297,18 @@ Geográfico Electoral del IECM 2021**:
   colonia.
 - Pendiente: asociación sección→colonia automática (spatial join) y Censo
   INEGI 2020 / vivienda.
+
+## ETAPA 2b — LOCAL-FIRST + DATOS SINTÉTICOS DE PRUEBA
+
+- `modules/datos_locales.py`: CSVs en `data/` para **abrir la app y ver datos al
+  instante** (sin red por render) y fallback cuando Mongo no conecta.
+- Toggle de la Pestaña 1: **Auto (Mongo si conecta, si no Local) / Mongo /
+  Local / Demo**.
+- `sembrar_datos_sinteticos.py` + botón "🗂️ Herramientas de datos → 🧪 Generar
+  500": 500 registros de prueba (45% visita/30% simpatía/25% queja; intenciones
+  45/35/20; ~30% quejas AGUA; fechas últimos 30 días; colonia por distrito ~80%)
+  marcados como `fuente='real'` pero con `brigadista='sintetico_*'`.
+- **Sincronizar a Mongo**: sube el CSV local a `registros_campo` (durable en
+  Cloud para el equipo; dedup por uid). Limpieza de sintéticos local + Mongo.
+- Lecturas de Mongo cacheadas (`@st.cache_data`) + `invalidar_cache_datos()` tras
+  mutaciones → reduce el retraso al guardar un registro.

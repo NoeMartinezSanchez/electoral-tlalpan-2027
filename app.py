@@ -15,6 +15,7 @@ from modules.datos_campo import (
     importar_colonias_iecm,
     importar_secciones_ine,
     insertar_registro,
+    invalidar_cache_datos,
     obtener_colonias,
     obtener_registros,
     obtener_resumen,
@@ -22,6 +23,7 @@ from modules.datos_campo import (
     reconectar,
     secciones_para_app,
 )
+import modules.datos_locales as dl
 from modules.nlp import clasificar_queja
 from utils import (
     inyectar_estilos_custom,
@@ -40,7 +42,12 @@ st.set_page_config(
 
 # 2. Inicialización del estado global de la aplicación (Streamlit session_state)
 if 'secciones' not in st.session_state:
-    st.session_state.secciones, st.session_state.origen_secciones = secciones_para_app()
+    df_local = dl.leer_secciones()
+    if not df_local.empty and 'id' in df_local.columns:
+        st.session_state.secciones = df_local
+        st.session_state.origen_secciones = 'local'
+    else:
+        st.session_state.secciones, st.session_state.origen_secciones = secciones_para_app()
 if 'visitas' not in st.session_state:
     st.session_state.visitas = []
 if 'alertas' not in st.session_state:
@@ -177,17 +184,90 @@ def mostrar_mapa(df):
     # Renderizar el mapa de forma adaptable
     folium_static(m, width=None, height=400)
 
-def _mostrar_formulario_registro():
+def _fuente_actual() -> str:
     """
-    Formulario de registro REAL de campo (brigadista→Mongo): sección, tipo
+    Resuelve la fuente de datos activa según el toggle y la conexión:
+    'mongo' | 'local' | 'demo'. En 'auto', Mongo si conecta; si no, local.
+    """
+    modo = st.session_state.get('modo_campo', 'auto')
+    if modo == 'demo':
+        return 'demo'
+    if modo == 'local':
+        return 'local'
+    if modo == 'mongo':
+        if conexion_ok():
+            return 'mongo'
+        st.warning("⚠️ Mongo no conectado; se cae a datos locales.")
+        return 'local'
+    return 'mongo' if conexion_ok() else 'local'
+
+
+def _mostrar_herramientas_datos():
+    """
+    Herramientas de datos (siempre visibles): importar secciones/colonias,
+    generar datos sintéticos, sincronizar a Mongo, limpiar sintéticos y
+    reintentar conexión. Los sintéticos se marcan con brigadista 'sintetico_*'.
+    """
+    with st.expander("🗂️ Herramientas de datos"):
+        c_a, c_b = st.columns(2)
+        with c_a:
+            if st.button("🔄 Importar secciones IECM/INE", use_container_width=True):
+                res = importar_secciones_ine()
+                invalidar_cache_datos()
+                st.toast(res['mensaje'], icon="✅" if res['ok'] else "⚠️")
+                st.rerun()
+            if st.button("🏘️ Importar colonias IECM", use_container_width=True):
+                res = importar_colonias_iecm()
+                dl.leer_colonias()  # asegura el CSV local si hace falta
+                invalidar_cache_datos()
+                st.toast(res['mensaje'], icon="✅" if res['ok'] else "⚠️")
+                st.rerun()
+            if st.button("🧪 Generar 500 registros sintéticos", use_container_width=True):
+                res = dl.sembrar_sinteticos(500)
+                invalidar_cache_datos()
+                st.toast(res['mensaje'], icon="✅" if res['ok'] else "⚠️")
+                st.rerun()
+        with c_b:
+            if st.button("📤 Sincronizar a Mongo", use_container_width=True):
+                res = dl.sincronizar_a_mongo()
+                invalidar_cache_datos()
+                st.toast(res['mensaje'], icon="✅" if res['ok'] else "⚠️")
+                st.rerun()
+            if st.button("🧹 Limpiar sintéticos", use_container_width=True):
+                res_local = dl.limpiar_sinteticos()
+                if conexion_ok():
+                    try:
+                        col = __import__('modules.datos_campo',
+                                         fromlist=['coleccion']).coleccion('registros_campo')
+                        borrados = col.delete_many(
+                            {'brigadista': {'$regex': '^sintetico_'}}).deleted_count \
+                            if col is not None else 0
+                    except Exception as e:
+                        borrados = 0
+                        print(f'LIMPIAR SINTO: {e}')
+                else:
+                    borrados = 0
+                invalidar_cache_datos()
+                st.toast(f"🧹 Sintéticos eliminados: {res_local['n']} local "
+                         f"/ {borrados} Mongo.", icon="✅")
+                st.rerun()
+            if st.button("🔁 Reintentar conexión Mongo", use_container_width=True):
+                reconectar()
+                invalidar_cache_datos()
+                st.rerun()
+
+
+def _mostrar_formulario_registro(fuente: str):
+    """
+    Formulario de registro REAL de campo (brigadista): sección, tipo
     (simpatía/visita/queja), intención y texto de queja. Clasifica con NLP e
-    inserta en `registros_campo`. Cumple la nota INE: se registra como
-    'simpatía', nunca como voto formal.
+    inserta en la fuente activa (Mongo `registros_campo` o CSV local) o en
+    ambas vía sincronización. Cumple la nota INE: se registra como 'simpatía'.
     """
     secciones_ids = st.session_state.secciones['id'].tolist()
     nombre_por_id = dict(zip(st.session_state.secciones['id'],
                              st.session_state.secciones['nombre']))
-    if st.session_state.get('origen_secciones', 'demo') != 'ine':
+    if st.session_state.get('origen_secciones', 'demo') == 'demo':
         st.warning("🟡 Las secciones visibles siguen en modo demo. Para registrar "
                    "campo con geografía real, importa antes la cartografía IECM "
                    "('🔄 Importar secciones INE/IECM').")
@@ -215,7 +295,9 @@ def _mostrar_formulario_registro():
         texto = st.text_area("📝 Queja / nota (obligatoria si el tipo es Queja):")
 
         # Colonia (opcional), filtrada por el distrito local de la sección elegida
-        colonias_df = obtener_colonias()
+        colonias_df = dl.leer_colonias() if fuente == 'local' else obtener_colonias()
+        if colonias_df.empty:
+            colonias_df = dl.leer_colonias()
         distrito_seccion = ''
         fila_sec = st.session_state.secciones[st.session_state.secciones['id'] == int(sec_sel)]
         if not fila_sec.empty and 'distrito' in fila_sec.columns:
@@ -254,46 +336,56 @@ def _mostrar_formulario_registro():
                 'fecha': datetime.now().isoformat(),
                 'fuente': 'real',
             }
-            resp = insertar_registro(doc)
+            if fuente == 'mongo':
+                resp = insertar_registro(doc)
+                if resp['ok']:
+                    invalidar_cache_datos()
+            else:  # local
+                resp = dl.agregar_registro(doc)
             if resp['ok']:
-                st.toast(f"Registro guardado · sección {sec_sel} ({tipo})", icon="✅")
+                destino = 'Mongo' if fuente == 'mongo' else 'local'
+                st.toast(f"Registro guardado · sección {sec_sel} ({tipo}) → {destino}",
+                         icon="✅")
                 st.session_state['mensaje_campo'] = (
-                    f"Registro de {tipo} en sección {sec_sel}. NLP: "
-                    f"categoría {categoria} · sentimiento {sentimiento}.")
+                    f"Registro de {tipo} en sección {sec_sel} guardado en {destino}. "
+                    f"NLP: categoría {categoria} · sentimiento {sentimiento}. "
+                    + ("Usa 'Sincronizar a Mongo' para persistirlo para el equipo."
+                       if fuente == 'local' else ""))
             else:
-                st.session_state['mensaje_campo'] = f"No se pudo guardar: {resp['error']}"
+                st.session_state['mensaje_campo'] = f"No se pudo guardar: {resp.get('error', '')}"
             st.rerun()
     mensaje_campo = st.session_state.pop('mensaje_campo', None)
     if mensaje_campo:
         st.info(mensaje_campo)
 
 
-def mostrar_panel_control(usar_real: bool):
+def mostrar_panel_control(fuente_datos: str = ''):
     """
-    Panel de acciones de campaña: registro real (Mongo) o demo (simulación),
-    ficha de sección y bitácora de quejas.
-    """
+    Panel de acciones de campaña: registro mongo/local o demo (simulación),
+    ficha de sección y bitácora de quejas."""
     st.markdown("<h3 style='font-size: 18px; margin-bottom: 12px; margin-top: 5px;'>🎯 Acciones de Campaña</h3>", unsafe_allow_html=True)
 
     st.radio(
-        "Fuente de registros:",
-        options=['auto', 'real', 'demo'],
+        "Fuente de datos:",
+        options=['auto', 'mongo', 'local', 'demo'],
         format_func=lambda m: {'auto': '⚙️ Auto (según conexión)',
-                               'real': '🗳️ Real (Mongo)',
+                               'mongo': '🗳️ Mongo',
+                               'local': '💻 Local (rápido)',
                                'demo': '🎲 Demo (simular)'}[m],
         horizontal=True,
         key='modo_campo',
         index=0,   # 'auto' es la opción de índice 0
-        help="Auto usa registro real si MongoDB está conectado; si no, cae a demo.",
+        help="Auto: Mongo si está conectado (persistente para el equipo), si no "
+             "Local (CSV rápido). Local escribe en archivo y usa 'Sincronizar a "
+             "Mongo' para subirlo.",
     )
-    usar_real = ((st.session_state.get('modo_campo', 'auto') == 'real')
-                 or (st.session_state.get('modo_campo', 'auto') == 'auto'
-                     and conexion_ok()))
-    st.session_state['usar_real'] = usar_real
+    fuente = _fuente_actual()
+    st.session_state['usar_real'] = fuente in ('mongo', 'local')
+    st.session_state['fuente_datos'] = fuente
 
-    # 1. Registro de visitas: modo real (formulario) o demo
-    if usar_real:
-        _mostrar_formulario_registro()
+    # 1. Registro de visitas: formulario (mongo/local) o demo
+    if fuente in ('mongo', 'local'):
+        _mostrar_formulario_registro(fuente)
     else:
         if st.button("📱 Registrar Visita (Demo)", use_container_width=True):
             st.session_state['modo_campo'] = 'demo'
@@ -393,11 +485,14 @@ def mostrar_panel_control(usar_real: bool):
         </div>
     """, unsafe_allow_html=True)
     
-    # 3. Bitácora de quejas de la sección consultada (real o demo)
-    if usar_real:
-        df_quejas = obtener_registros(int(seccion_sel))
+    # 3. Bitácora de quejas de la sección consultada (mongo/local o demo)
+    if fuente in ('mongo', 'local'):
+        df_quejas = (obtener_registros(int(seccion_sel)) if fuente == 'mongo'
+                     else dl.leer_registros())
+        if fuente == 'local' and not df_quejas.empty:
+            df_quejas = df_quejas[df_quejas['seccion_id'].astype(int) == int(seccion_sel)]
         quejas_seccion = []
-        if not df_quejas.empty:
+        if df_quejas is not None and not df_quejas.empty:
             for _, r in df_quejas.iterrows():
                 try:
                     fecha_reg = datetime.fromisoformat(str(r.get('fecha', '')))
@@ -409,7 +504,7 @@ def mostrar_panel_control(usar_real: bool):
                     'queja_texto': r.get('queja_texto') or '',
                     'fecha': fecha_reg,
                 })
-        texto_vacio = ("Aún no hay registros reales en esta sección. Usa el "
+        texto_vacio = ("Aún no hay registros en esta sección. Usa el "
                        "formulario 'Guardar registro' para capturar visitas/quejas.")
     else:
         quejas_seccion = [v for v in st.session_state.visitas if v['seccion_id'] == seccion_sel]
@@ -548,21 +643,37 @@ def mostrar_dashboard_electoral():
     """
     Renderiza el contenido completo del Módulo de Inteligencia Electoral (Pestaña 1).
     """
-    # Determinar si se usa el registro real (Mongo) según conexión y preferencia
-    modo_campo = st.session_state.get('modo_campo', 'auto')
-    usar_real = (modo_campo == 'real') or (modo_campo == 'auto' and conexion_ok())
-    st.session_state['usar_real'] = usar_real
+    # Resolver la fuente de datos activa (mongo/local/demo)
+    fuente = _fuente_actual()
+    st.session_state['usar_real'] = fuente in ('mongo', 'local')
+    st.session_state['fuente_datos'] = fuente
 
-    # Datos reales de campo: estado de secciones (cobertura/intención) con registros reales
-    registros = obtener_registros() if usar_real else pd.DataFrame()
-    if usar_real and not registros.empty:
-        st.session_state.secciones = estado_secciones(
-            st.session_state.secciones, registros)
+    # Cargar registros y secciones según la fuente
+    if fuente == 'mongo':
+        registros = obtener_registros()
+        secciones_base = st.session_state.secciones
+    elif fuente == 'local':
+        registros = dl.leer_registros()
+        secciones_base = st.session_state.secciones
+        if secciones_base.empty or 'id' not in secciones_base.columns:
+            secciones_base = dl.leer_secciones()
+            st.session_state.secciones = secciones_base
+            st.session_state.origen_secciones = 'local'
+    else:
+        registros = pd.DataFrame()
+        secciones_base = st.session_state.secciones
 
-    # Filtros de analítica real y DataFrame de mapa (solo en modo real)
-    if usar_real:
+    # Estado real de las secciones (cobertura/intención) con los registros
+    if fuente in ('mongo', 'local') and not registros.empty:
+        st.session_state.secciones = estado_secciones(secciones_base, registros)
+
+    # Filtros de analítica y DataFrame de mapa
+    if fuente in ('mongo', 'local'):
+        colonias_df = dl.leer_colonias() if fuente == 'local' else obtener_colonias()
+        if colonias_df.empty:
+            colonias_df = dl.leer_colonias()
         _filtros, reg_filt, df_mapa = _controles_filtros_campo(
-            registros, st.session_state.secciones, obtener_colonias())
+            registros, st.session_state.secciones, colonias_df)
     else:
         reg_filt = pd.DataFrame()
         df_mapa = st.session_state.secciones
@@ -571,38 +682,22 @@ def mostrar_dashboard_electoral():
     # Regenerar alertas en cada corrida para reflejar el estado actual
     st.session_state.alertas = []
     generar_alertas(st.session_state.secciones, registros)
-        
+
     # Título del módulo
     st.markdown('<div class="main-title">🗳️ Inteligencia Electoral - Tlalpan 2027</div>', unsafe_allow_html=True)
     st.markdown('<div class="subtitle">Monitoreo de Campo, Cobertura y Simulación de Visitas Territoriales</div>', unsafe_allow_html=True)
 
-    # Origen de los datos (real INE/Mongo o demo)
-    origen = st.session_state.get('origen_secciones', 'demo')
-    if origen == 'ine':
-        st.success(f"🗺️ Geografía electoral real (ITE/INE) · {len(st.session_state.secciones)} "
-                   f"secciones · persistido en MongoDB.")
+    # Origen de los datos + herramientas de datos (siempre visibles)
+    if fuente == 'mongo':
+        st.success(f"🗳️ Fuente: Mongo · {len(st.session_state.secciones)} secciones · "
+                   f"{len(registros)} registros.")
+    elif fuente == 'local':
+        st.success(f"💻 Fuente: Local (CSV) · {len(st.session_state.secciones)} secciones · "
+                   f"{len(registros)} registros locales. Usa 'Sincronizar a Mongo' "
+                   f"para persistirlos para el equipo.")
     else:
-        col_av, col_btn = st.columns([2, 1])
-        with col_av:
-            estado_mongo = 'conectado' if conexion_ok() else f'sin conexión ({error_conexion()})'
-            st.warning(f"🟡 Secciones en modo demo (sin cartografía INE cargada). "
-                       f"MongoDB: {estado_mongo}.")
-        with col_btn:
-            if st.button("🔄 Importar secciones IECM/INE", use_container_width=True):
-                res = importar_secciones_ine()
-                if res['ok']:
-                    st.toast(res['mensaje'], icon="✅")
-                else:
-                    st.error(res['mensaje'])
-                st.session_state.secciones, st.session_state.origen_secciones = secciones_para_app()
-                st.rerun()
-            if st.button("🔁 Reintentar conexión Mongo", use_container_width=True):
-                reconectar()
-                st.rerun()
-            if st.button("🏘️ Importar colonias IECM", use_container_width=True):
-                res_col = importar_colonias_iecm()
-                st.toast(res_col['mensaje'], icon="✅" if res_col['ok'] else "⚠️")
-                st.rerun()
+        st.info("🎲 Modo demo (simulación). Cambia la fuente en 'Acciones de Campaña'.")
+    _mostrar_herramientas_datos()
     
     # Indicadores Clave de Desempeño (KPIs)
     total_sec = len(st.session_state.secciones)
@@ -621,12 +716,28 @@ def mostrar_dashboard_electoral():
     with c4:
         st.markdown(f'<div class="kpi-container"><span class="kpi-label" style="color:#dc2626;">❤️ Contra</span><span class="kpi-value" style="color:#dc2626;">{contra_sec}</span></div>', unsafe_allow_html=True)
 
-    # Resumen de actividad real cuando hay registros de campo
-    if usar_real:
-        resumen_campo = obtener_resumen()
+    # Resumen de actividad según la fuente activa
+    if fuente in ('mongo', 'local'):
+        if fuente == 'mongo':
+            resumen_campo = obtener_resumen()
+        else:
+            sim_local = {}
+            if not registros.empty and 'intencion' in registros.columns:
+                sim_local = registros[
+                    registros['tipo'].isin(['simpatia', 'visita'])]['intencion'] \
+                    .value_counts().to_dict()
+            resumen_campo = {
+                'total': int(len(registros)),
+                'simpatias': sim_local,
+                'quejas': int((registros['tipo'] == 'queja').sum())
+                          if not registros.empty and 'tipo' in registros.columns else 0,
+                'secciones_con_registro': int(registros['seccion_id'].nunique())
+                                          if not registros.empty else 0,
+            }
         if resumen_campo:
-            sim = resumen_campo.get('simpatias', {})
-            st.caption(f"🗳️ Registros reales (Mongo): {resumen_campo.get('total', 0)} · "
+            sim = resumen_campo.get('simpatias', {}) or {}
+            fuente_nombre = 'Mongo' if fuente == 'mongo' else 'local'
+            st.caption(f"🗳️ Registros ({fuente_nombre}): {resumen_campo.get('total', 0)} · "
                        f"simpatías 💚 {sim.get('a_favor', 0)} / 💛 {sim.get('indeciso', 0)} / "
                        f"❤️ {sim.get('en_contra', 0)} · quejas {resumen_campo.get('quejas', 0)} · "
                        f"secciones con actividad {resumen_campo.get('secciones_con_registro', 0)}")
@@ -641,11 +752,11 @@ def mostrar_dashboard_electoral():
         st.markdown('</div>', unsafe_allow_html=True)
 
     with col_panel:
-        mostrar_panel_control(usar_real)
+        mostrar_panel_control(fuente)
         mostrar_alertas(st.session_state.alertas)
 
-    # Analítica fina (microsegmentación e histórico) en modo real
-    if usar_real and not reg_filt.empty:
+    # Analítica fina (microsegmentación e histórico) en fuente mongo/local
+    if fuente in ('mongo', 'local'):
         _mostrar_microsegmentacion(reg_filt, st.session_state.secciones)
         _mostrar_historico(reg_filt)
 

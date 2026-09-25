@@ -103,6 +103,15 @@ def coleccion(nombre: str):
     return db[nombre]
 
 
+def invalidar_cache_datos() -> None:
+    """Limpia las caches de lectura de Mongo (secciones/registros/colonias/resumen)."""
+    for fn in (obtener_secciones, obtener_colonias, obtener_registros, obtener_resumen):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+
 def conexion_ok() -> bool:
     return get_client() is not None
 
@@ -148,6 +157,7 @@ def importar_secciones_ine() -> dict:
                            {'$set': reg}, upsert=True)
         # Respaldo ligero en CSV (gitignored) para depuración
         generar_csv_ine()
+        invalidar_cache_datos()
         return {'ok': True, 'n': len(registros),
                 'mensaje': f'{len(registros)} secciones del IECM importadas a MongoDB.'}
     except Exception as e:
@@ -155,6 +165,7 @@ def importar_secciones_ine() -> dict:
         return {'ok': False, 'n': 0, 'mensaje': str(e)}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def obtener_secciones() -> pd.DataFrame:
     """
     Devuelve las secciones reales guardadas en MongoDB como DataFrame.
@@ -223,6 +234,7 @@ def importar_colonias_iecm() -> dict:
             doc = {c: fila[c] for c in df.columns}
             doc['fuente'] = 'Colonias IECM (shapefile)'
             col.update_one({'cve': str(fila['cve'])}, {'$set': doc}, upsert=True)
+        invalidar_cache_datos()
         return {'ok': True, 'n': len(df),
                 'mensaje': f'{len(df)} colonias de Tlalpan importadas a MongoDB.'}
     except Exception as e:
@@ -230,6 +242,7 @@ def importar_colonias_iecm() -> dict:
         return {'ok': False, 'n': 0, 'mensaje': str(e)}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def obtener_colonias() -> pd.DataFrame:
     """
     Devuelve las colonias (de Mongo `colonias` o, si no hay conexión/datos,
@@ -269,12 +282,14 @@ def insertar_registro(registro: dict) -> dict:
         return {'ok': False, 'error': f'MONGO: {error_conexion()}'}
     try:
         resultado = col.insert_one(registro)
+        invalidar_cache_datos()
         return {'ok': True, 'id': str(resultado.inserted_id)}
     except Exception as e:
         print(f'MONGO: error al insertar registro: {e}')
         return {'ok': False, 'error': str(e)}
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def obtener_registros(seccion_id: Optional[int] = None) -> pd.DataFrame:
     """Devuelve los registros de campo (globalmente o de una sección)."""
     col = coleccion('registros_campo')
@@ -331,6 +346,7 @@ def estado_secciones(secciones_df: pd.DataFrame,
     return df
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def obtener_resumen() -> dict:
     """
     Resumen agregado de los registros de campo (totales por tipo, categoría,
@@ -374,6 +390,7 @@ def limpiar_registros() -> dict:
         return {'ok': False, 'error': f'MONGO: {error_conexion()}'}
     try:
         resultado = col.delete_many({})
+        invalidar_cache_datos()
         return {'ok': True, 'n': resultado.deleted_count}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
