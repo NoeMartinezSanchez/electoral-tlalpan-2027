@@ -16,6 +16,7 @@ from modules.datos_campo import (
     obtener_registros,
     obtener_resumen,
     obtener_secciones,
+    reconectar,
     secciones_para_app,
 )
 from modules.nlp import clasificar_queja
@@ -439,6 +440,9 @@ def mostrar_dashboard_electoral():
                 else:
                     st.error(res['mensaje'])
                 st.session_state.secciones, st.session_state.origen_secciones = secciones_para_app()
+                st.rerun()
+            if st.button("🔁 Reintentar conexión Mongo", use_container_width=True):
+                reconectar()
                 st.rerun()
     
     # Indicadores Clave de Desempeño (KPIs)
