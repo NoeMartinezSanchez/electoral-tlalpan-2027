@@ -32,6 +32,10 @@ exportación de resultados sin generación sintética.
   intención por sección como la **moda de simpatías**. Alertas del documento:
   indecisión >40%, cobertura <30% y concentración de quejas de agua (≥3). El
   modo **Demo** (simular visita) queda como opción conmutable.
+- **Analítica fina (Etapa 2)**: microsegmentación por **colonia** (179 colonias
+  de Tlalpan desde el shapefile del IECM; campo `colonia` opcional en el
+  registro), resumen por **distrito local**, series temporales e histórico
+  (Plotly), y filtros por distrito/circunscripción/colonia/categoría.
 
 ### 2. 📊 Redes Sociales
 - Dashboard de analítica sobre posts (TikTok, X, Facebook, Instagram).

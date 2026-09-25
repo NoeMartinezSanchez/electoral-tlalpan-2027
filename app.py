@@ -7,12 +7,15 @@ from streamlit_folium import folium_static
 
 # Importaciones locales
 from modules.data import CONFIG, generar_datos_iniciales, simular_visita
+from modules.analitica import resumen_por_colonia, resumen_por_distrito, serie_temporal
 from modules.datos_campo import (
     conexion_ok,
     error_conexion,
     estado_secciones,
+    importar_colonias_iecm,
     importar_secciones_ine,
     insertar_registro,
+    obtener_colonias,
     obtener_registros,
     obtener_resumen,
     obtener_secciones,
@@ -117,6 +120,24 @@ def generar_alertas(df, registros_df=None):
                                    f"Preparar respuesta de gobierno."
                     })
 
+    # Alerta de concentración de quejas de agua por colonia (una vez por colonia)
+    if registros_df is not None and not registros_df.empty \
+            and 'colonia' in registros_df.columns and 'queja_categoria' in registros_df.columns:
+        for colonia, grp in registros_df.groupby('colonia'):
+            n_agua = int((grp['queja_categoria'] == 'AGUA').sum())
+            if isinstance(colonia, str) and colonia.strip() and n_agua >= 3:
+                ya = any(a['tipo'] == 'Quejas de Agua (colonia)'
+                         and a.get('colonia') == colonia for a in st.session_state.alertas)
+                if not ya:
+                    st.session_state.alertas.append({
+                        'seccion': '',
+                        'colonia': colonia,
+                        'tipo': 'Quejas de Agua (colonia)',
+                        'mensaje': f"{n_agua} quejas de agua concentradas en la colonia "
+                                   f"'{colonia}'. Preparar respuesta de gobierno y "
+                                   f"discurso local."
+                    })
+
 def mostrar_mapa(df):
     """
     Genera el mapa Folium centrado en Tlalpan, renderiza los CircleMarkers correspondientes
@@ -192,6 +213,26 @@ def _mostrar_formulario_registro():
                                        'en_contra': '❤️ En contra'}[v],
                 horizontal=True)
         texto = st.text_area("📝 Queja / nota (obligatoria si el tipo es Queja):")
+
+        # Colonia (opcional), filtrada por el distrito local de la sección elegida
+        colonias_df = obtener_colonias()
+        distrito_seccion = ''
+        fila_sec = st.session_state.secciones[st.session_state.secciones['id'] == int(sec_sel)]
+        if not fila_sec.empty and 'distrito' in fila_sec.columns:
+            distrito_seccion = str(fila_sec.iloc[0]['distrito'])
+        opciones_colonias = ['Sin especificar']
+        cve_por_nombre = {}
+        if not colonias_df.empty:
+            disponibles = colonias_df if not distrito_seccion else \
+                colonias_df[colonias_df['distrito'] == distrito_seccion]
+            opciones_colonias += disponibles['nombre'].tolist()
+            cve_por_nombre = dict(zip(disponibles['nombre'], disponibles['cve']))
+        colonia_sel = st.selectbox(
+            "🏘️ Colonia (opcional):",
+            options=opciones_colonias,
+            help="Facilita la microsegmentación por colonia. Se lista la de este "
+                 "distrito local; elige 'Sin especificar' si no aplica.")
+
         enviado = st.form_submit_button("💾 Guardar registro", use_container_width=True)
 
     if enviado:
@@ -208,6 +249,8 @@ def _mostrar_formulario_registro():
                 'queja_categoria': categoria,
                 'queja_sentimiento': sentimiento,
                 'brigadista': st.session_state.get('usuario_login', 'admin'),
+                'colonia': colonia_sel if colonia_sel != 'Sin especificar' else None,
+                'colonia_cve': cve_por_nombre.get(colonia_sel) if colonia_sel != 'Sin especificar' else None,
                 'fecha': datetime.now().isoformat(),
                 'fuente': 'real',
             }
@@ -398,6 +441,109 @@ def mostrar_panel_control(usar_real: bool):
                 </div>
             """, unsafe_allow_html=True)
 
+def _controles_filtros_campo(registros_df, secciones_df, colonias_df):
+    """
+    Controles de filtro de la analítica real (distrito, circunscripción, colonia
+    y categoría de queja). Aplican sobre el mapa (secciones) y sobre los
+    registros para las vistas agregadas.
+
+    Retorna:
+        (dict de filtros, registros filtrados, secciones filtradas).
+    """
+    distritos = (sorted(str(d) for d in secciones_df['distrito'].dropna().unique())
+                 if 'distrito' in secciones_df.columns else [])
+    circuns = (sorted(str(c) for c in secciones_df['circunscripcion'].dropna().unique())
+               if 'circunscripcion' in secciones_df.columns else [])
+    colonias = (sorted(colonias_df['nombre'].dropna().unique())
+                if colonias_df is not None and not colonias_df.empty else [])
+    categorias = (sorted(registros_df['queja_categoria'].dropna().unique())
+                  if not registros_df.empty and 'queja_categoria' in registros_df else [])
+
+    c1, c2, c3, c4 = st.columns(4)
+    f_dto = c1.selectbox("Distrito local:", ['Todos'] + distritos, key='filtro_distrito')
+    f_cir = c2.selectbox("Circunscripción:", ['Todas'] + circuns, key='filtro_circunscripcion')
+    f_col = c3.selectbox("Colonia:", ['Todas'] + colonias, key='filtro_colonia')
+    f_cat = c4.selectbox("Categoría queja:", ['Todas'] + categorias, key='filtro_categoria')
+
+    df_mapa = secciones_df.copy()
+    if f_dto != 'Todos':
+        df_mapa = df_mapa[df_mapa['distrito'].astype(str) == f_dto]
+    if f_cir != 'Todas':
+        df_mapa = df_mapa[df_mapa['circunscripcion'].astype(str) == f_cir]
+
+    reg = registros_df.copy() if registros_df is not None and not registros_df.empty \
+        else pd.DataFrame()
+    if not reg.empty and not secciones_df.empty and 'id' in secciones_df.columns:
+        cols_attr = [c for c in ('distrito', 'circunscripcion')
+                     if c in secciones_df.columns]
+        if cols_attr:
+            attrs = secciones_df.set_index('id')[cols_attr]
+            reg = reg.join(attrs, on='seccion_id', how='left')
+            if 'distrito' in cols_attr:
+                reg['_distrito'] = reg['distrito'].astype(str)
+                if f_dto != 'Todos':
+                    reg = reg[reg['_distrito'] == f_dto]
+            if 'circunscripcion' in cols_attr:
+                reg['_circun'] = reg['circunscripcion'].astype(str)
+                if f_cir != 'Todas':
+                    reg = reg[reg['_circun'] == f_cir]
+    if 'colonia' in reg.columns and f_col != 'Todas':
+        reg = reg[reg['colonia'] == f_col]
+    if 'queja_categoria' in reg.columns and f_cat != 'Todas':
+        reg = reg[reg['queja_categoria'] == f_cat]
+
+    filtros = {'distrito': f_dto, 'circunscripcion': f_cir,
+               'colonia': f_col, 'categoria': f_cat}
+    return filtros, reg.reset_index(drop=True), df_mapa.reset_index(drop=True)
+
+
+def _mostrar_microsegmentacion(registros_df, secciones_df):
+    """
+    Panel de microsegmentación por colonia y resumen por distrito local
+    (la 'precisión de discurso' del documento estratégico).
+    """
+    st.markdown("---")
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 4px;'>"
+                "📊 Microsegmentación por colonia</h4>", unsafe_allow_html=True)
+    res_col = resumen_por_colonia(registros_df)
+    if res_col.empty:
+        st.info("Sin registros con colonia para microsegmentar.")
+    else:
+        top = res_col.iloc[0]
+        if top['quejas_agua'] >= 3 and top['quejas'] > 0:
+            st.warning(f"💧 El {top['pct_agua']:.0f}% de los reportes de la colonia "
+                       f"'{top['colonia']}' son de agua/pipas ({top['quejas_agua']} quejas) "
+                       f"— preparar respuesta de gobierno y discurso local.")
+        else:
+            st.caption(f"Top colonia con actividad: '{top['colonia']}' "
+                       f"({top['total']} registros, {top['quejas_agua']} quejas de agua).")
+        st.dataframe(res_col, use_container_width=True, hide_index=True)
+
+    res_dto = resumen_por_distrito(registros_df, secciones_df)
+    if not res_dto.empty:
+        st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 4px;'>"
+                    "🏛️ Resumen por distrito local</h4>", unsafe_allow_html=True)
+        st.dataframe(res_dto, use_container_width=True, hide_index=True)
+
+
+def _mostrar_historico(registros_df):
+    """Panel de histórico (serie temporal de registros de campo) con Plotly."""
+    serie = serie_temporal(registros_df)
+    st.markdown("<h4 style='font-size: 15px; font-weight: 600; margin-bottom: 4px;'>"
+                "📈 Histórico de registros</h4>", unsafe_allow_html=True)
+    if serie.empty:
+        st.info("Sin registros con fecha para graficar el histórico.")
+        return
+    import plotly.express as px
+    fig = px.bar(serie, x='fecha', y=['simpatias', 'quejas'], barmode='stack',
+                 labels={'value': 'Registros', 'variable': 'Tipo',
+                         'fecha': 'Fecha'},
+                 color_discrete_sequence=['#10b981', '#64748b'])
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=300,
+                      legend=dict(orientation='h', yanchor='bottom', y=1.02))
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def mostrar_dashboard_electoral():
     """
     Renderiza el contenido completo del Módulo de Inteligencia Electoral (Pestaña 1).
@@ -412,6 +558,15 @@ def mostrar_dashboard_electoral():
     if usar_real and not registros.empty:
         st.session_state.secciones = estado_secciones(
             st.session_state.secciones, registros)
+
+    # Filtros de analítica real y DataFrame de mapa (solo en modo real)
+    if usar_real:
+        _filtros, reg_filt, df_mapa = _controles_filtros_campo(
+            registros, st.session_state.secciones, obtener_colonias())
+    else:
+        reg_filt = pd.DataFrame()
+        df_mapa = st.session_state.secciones
+    st.session_state['registros_filtrados'] = reg_filt
 
     # Regenerar alertas en cada corrida para reflejar el estado actual
     st.session_state.alertas = []
@@ -444,6 +599,10 @@ def mostrar_dashboard_electoral():
             if st.button("🔁 Reintentar conexión Mongo", use_container_width=True):
                 reconectar()
                 st.rerun()
+            if st.button("🏘️ Importar colonias IECM", use_container_width=True):
+                res_col = importar_colonias_iecm()
+                st.toast(res_col['mensaje'], icon="✅" if res_col['ok'] else "⚠️")
+                st.rerun()
     
     # Indicadores Clave de Desempeño (KPIs)
     total_sec = len(st.session_state.secciones)
@@ -474,16 +633,21 @@ def mostrar_dashboard_electoral():
 
     # Disposición responsiva en columnas.
     col_mapa, col_panel = st.columns([1.7, 1.3])
-    
+
     with col_mapa:
         st.markdown("<h3 style='font-size: 18px; margin-bottom: 12px;'>🗺️ Mapa de Secciones</h3>", unsafe_allow_html=True)
         st.markdown('<div class="folium-map-container">', unsafe_allow_html=True)
-        mostrar_mapa(st.session_state.secciones)
+        mostrar_mapa(df_mapa)
         st.markdown('</div>', unsafe_allow_html=True)
-        
+
     with col_panel:
         mostrar_panel_control(usar_real)
         mostrar_alertas(st.session_state.alertas)
+
+    # Analítica fina (microsegmentación e histórico) en modo real
+    if usar_real and not reg_filt.empty:
+        _mostrar_microsegmentacion(reg_filt, st.session_state.secciones)
+        _mostrar_historico(reg_filt)
 
 def main():
     # Inyectar estilos CSS comunes para diseño mobile-first y premium

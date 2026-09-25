@@ -36,6 +36,7 @@ NS = {'k': 'http://www.opengis.net/kml/2.2'}
 
 RUTA_KML_TLALPAN = os.path.join('documentos', 'Marco geografico electoral',
                                 'circunscripcionesDT', '12.kml')
+RUTA_SHP_COLONIAS = os.path.join('documentos', 'inegi', 'colonias_iecm.shp')
 RUTA_LOCAL_INE = os.path.join('data', 'secciones_ine.csv')
 TOLERANCIA_SIMPLIFICACION = 0.001  # grados (~110 m)
 
@@ -44,6 +45,10 @@ COLUMNAS_INE = ['id_seccion', 'nombre', 'distrito', 'distrito_federal',
                 'circunscripcion', 'lat', 'lon', 'poblacion',
                 'padron_electoral', 'lista_nominal', 'tipo_zona',
                 'area', 'geometry_geojson']
+
+# Columnas de la capa de colonias del IECM (documentos/inegi/colonias_iecm.shp)
+COLUMNAS_COLONIAS = ['cve', 'nombre', 'distrito', 'lat', 'lon', 'area',
+                     'geometry_geojson']
 
 
 def _coord_lista(anillo) -> list:
@@ -214,3 +219,47 @@ def cargar_secciones_ine() -> tuple:
         return df, 'ine'
     from modules.data import generar_datos_iniciales
     return generar_datos_iniciales(), 'demo'
+
+
+def parsear_colonias_iecm(ruta: str = RUTA_SHP_COLONIAS) -> pd.DataFrame:
+    """
+    Parsea el shapefile de colonias del IECM (`documentos/inegi/colonias_iecm.shp`)
+    y devuelve las **colonias de Tlalpan** (NOMDT = TLALPAN) con: código (`CVEUT`),
+    nombre (`NOMUT`), distrito local (`DTTOLOC`), centroide (EPSG:4326), área y
+    geometría simplificada (GeoJSON).
+
+    Retorna:
+        pd.DataFrame con las columnas de `COLUMNAS_COLONIAS` (vacío si no hay
+        archivo o no se pudo leer).
+    """
+    if not os.path.exists(ruta):
+        print(f'ADVERTENCIA: no existe el shapefile de colonias: {ruta}')
+        return pd.DataFrame()
+    try:
+        import geopandas as gpd
+        gdf = gpd.read_file(ruta)
+        if gdf.crs and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(epsg=4326)
+        gdf['NOMDT'] = gdf['NOMDT'].fillna('').astype(str).str.upper()
+        tlp = gdf[gdf['NOMDT'] == 'TLALPAN'].copy()
+        filas = []
+        for _, fila in tlp.iterrows():
+            geom = fila['geometry']
+            lon, lat = geom.centroid.x, geom.centroid.y
+            geometry_geojson = shapely_mapping(
+                geom.simplify(TOLERANCIA_SIMPLIFICACION, preserve_topology=True)) \
+                if SHAPELY_OK else None
+            filas.append({
+                'cve': str(fila['CVEUT']),
+                'nombre': str(fila['NOMUT']),
+                'distrito': str(fila['DTTOLOC']),
+                'lat': lat,
+                'lon': lon,
+                'area': geom.area,
+                'geometry_geojson': geometry_geojson,
+            })
+        df = pd.DataFrame(filas, columns=COLUMNAS_COLONIAS)
+        return df.sort_values('nombre').reset_index(drop=True)
+    except Exception as e:
+        print(f'ADVERTENCIA: no se pudo leer el shapefile de colonias: {e}')
+        return pd.DataFrame()

@@ -200,6 +200,58 @@ def secciones_para_app() -> tuple:
     return generar_datos_iniciales(), 'demo'
 
 
+def importar_colonias_iecm() -> dict:
+    """
+    Importa las colonias del IECM (vía `modules.geo`) a la colección `colonias`
+    de MongoDB (upsert por 'cve').
+
+    Retorna:
+        dict con 'ok' (bool), 'n' (cantidad) y 'mensaje'.
+    """
+    from modules.geo import parsear_colonias_iecm
+
+    df = parsear_colonias_iecm()
+    if df.empty:
+        return {'ok': False, 'n': 0,
+                'mensaje': 'No hay capa de colonias (falta '
+                           'documentos/inegi/colonias_iecm.shp).'}
+    col = coleccion('colonias')
+    if col is None:
+        return {'ok': False, 'n': 0, 'mensaje': f'MONGO: {error_conexion()}'}
+    try:
+        for _, fila in df.iterrows():
+            doc = {c: fila[c] for c in df.columns}
+            doc['fuente'] = 'Colonias IECM (shapefile)'
+            col.update_one({'cve': str(fila['cve'])}, {'$set': doc}, upsert=True)
+        return {'ok': True, 'n': len(df),
+                'mensaje': f'{len(df)} colonias de Tlalpan importadas a MongoDB.'}
+    except Exception as e:
+        print(f'MONGO: error al importar colonias: {e}')
+        return {'ok': False, 'n': 0, 'mensaje': str(e)}
+
+
+def obtener_colonias() -> pd.DataFrame:
+    """
+    Devuelve las colonias (de Mongo `colonias` o, si no hay conexión/datos,
+    parseando el shapefile del IECM) para alimentar selectores y análisis.
+
+    Retorna:
+        pd.DataFrame con cve/nombre/distrito/lat/lon (vacío si nada disponible).
+    """
+    col = coleccion('colonias')
+    if col is not None:
+        try:
+            docs = list(col.find({}, {'_id': 0}))
+            if docs:
+                df = pd.DataFrame(docs)
+                if 'cve' in df and 'nombre' in df:
+                    return df
+        except Exception as e:
+            print(f'MONGO: error al leer colonias: {e}')
+    from modules.geo import parsear_colonias_iecm
+    return parsear_colonias_iecm()
+
+
 # ---------------------------------------------------------------------------
 # Registros de campo (visitas / simpatías / quejas)
 # ---------------------------------------------------------------------------

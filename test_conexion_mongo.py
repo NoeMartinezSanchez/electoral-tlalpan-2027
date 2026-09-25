@@ -57,8 +57,21 @@ def main() -> None:
     db = cliente[cfg['DB']]
     print('    ✔ Conexión OK')
 
-    print('[2] Importando secciones del IECM (KML) -> secciones ...')
-    from modules.geo import parsear_kml_secciones
+    from modules.geo import parsear_colonias_iecm, parsear_kml_secciones
+
+    print('[2] Importando colonias IECM (shapefile) -> colonias ...')
+    df_col = parsear_colonias_iecm()
+    if df_col.empty:
+        print('    ✘ No se pudo parsear el shapefile de colonias (revisa documentos/inegi/)')
+    else:
+        col_colonias = db['colonias']
+        for _, fila in df_col.iterrows():
+            doc = {c: fila[c] for c in df_col.columns}
+            doc['fuente'] = 'Colonias IECM (shapefile)'
+            col_colonias.update_one({'cve': str(fila['cve'])}, {'$set': doc}, upsert=True)
+        print(f'    ✔ {len(df_col)} colonias de Tlalpan importadas/actualizadas')
+
+    print('[3] Importando secciones del IECM (KML) -> secciones ...')
     df = parsear_kml_secciones()
     if df.empty:
         print('    ✘ No se pudo parsear el KML (revisa documentos/Marco geografico electoral/)')
@@ -72,7 +85,7 @@ def main() -> None:
         col_sec.update_one({'id_seccion': int(fila['id_seccion'])}, {'$set': doc}, upsert=True)
     print(f'    ✔ {len(df)} secciones importadas/actualizadas en secciones')
 
-    print('[3] Insertando registros de prueba en registros_campo ...')
+    print('[4] Insertando registros de prueba en registros_campo ...')
     col_reg = db['registros_campo']
     sec_prueba = int(df.iloc[0]['id_seccion'])
     regs = [
@@ -93,7 +106,7 @@ def main() -> None:
     ids = col_reg.insert_many(regs).inserted_ids
     print(f'    ✔ {len(ids)} registros insertados en la sección {sec_prueba}')
 
-    print('[4] Resumen y estado por sección ...')
+    print('[5] Resumen y estado por sección ...')
     total = col_reg.count_documents({})
     sim = {i: col_reg.count_documents({'intencion': i}) for i in ('a_favor', 'indeciso', 'en_contra')}
     q_agua = col_reg.count_documents({'queja_categoria': 'AGUA'})
@@ -108,7 +121,7 @@ def main() -> None:
     print(f'    cobertura sección {sec_prueba}: {n} registros / {int(base)} lista nominal = '
           f'{min(100.0, n/base*100):.2f}%')
 
-    print('[5] LIMPIEZA')
+    print('[6] LIMPIEZA')
     if args.keep:
         print('    --keep activo: los registros de prueba se conservan.')
     else:

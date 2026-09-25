@@ -270,4 +270,30 @@ Geográfico Electoral del IECM 2021**:
 - La app usa Mongo (`secciones_para_app`) y cae a demo si no hay conexión/importación.
 - **Pendiente**: vivienda y Población del **Censo INEGI 2020** (se cruzará después);
   `padrón/list`a con corte 2021 y población 2010 = son referencias, no cifras vigentes.
-- La **cobertura real** se medirá (Etapa 1) como `{simpatías} / Lista_Nominal`.
+- La **cobertura real** se mide como `{registros} / Lista_Nominal`.
+
+## ETAPA 1 — CAPTURA REAL DE CAMPO
+
+- Formulario de brigadista (simpatía / visita / queja) que guarda en
+  `registros_campo` e identifica al usuario del login (`usuario_login`).
+- **Cobertura real** = registros / `Lista_Nominal × 100`; **intención por
+  sección** = moda de simpatías (`estado_secciones`).
+- Toggle **Real (Mongo) / Demo** (auto según conexión); `simular_visita` queda
+  solo en demo.
+- **Alertas del documento**: indecisión >40%, cobertura <30%, concentración de
+  quejas de AGUA por sección (≥3) y por colonia (≥3).
+
+## ETAPA 2 — ANALÍTICA REAL FINA + MICROSEGMENTACIÓN POR COLONIA
+
+- Capa de **179 colonias de Tlalpan** desde `documentos/inegi/colonias_iecm.shp`
+  (`parsear_colonias_iecm` → Mongo `colonias`).
+- Campo opcional `colonia`/`colonia_cve` en el registro de campo (select por
+  distrito local de la sección).
+- `modules/analitica.py`: `resumen_por_colonia` (incluye % quejas de agua →
+  "El NN% de los reportes de esta colonia son de agua/pipas"),
+  `resumen_por_distrito` y `serie_temporal`.
+- Dashboard: **filtros** (distrito, circunscripción, colonia, categoría),
+  **microsegmentación por colonia** y **histórico** (Plotly). Alerta AGUA por
+  colonia.
+- Pendiente: asociación sección→colonia automática (spatial join) y Censo
+  INEGI 2020 / vivienda.
