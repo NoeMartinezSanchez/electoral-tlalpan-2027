@@ -15,3 +15,6 @@ playwright>=1.49.0
 
 # Pruebas unitarias del dashboard de la Pestaña 2 (tests/test_analitica_social.py)
 pytest>=8.0.0
+
+# Verificación del PDF (tests/test_social_media_pdf.py): extraer texto/imágenes
+pypdf>=4.0.0

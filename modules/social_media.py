@@ -243,7 +243,7 @@ def mostrar_kpis_sentimiento(df):
             f"etiqueta 'sentimiento'</div></div>", unsafe_allow_html=True)
 
 
-def fig_lda_burbujas(resultado: dict) -> go.Figure:
+def fig_lda_burbujas(resultado):
     """
     Construye el plano 2D de burbujas de temáticas LDA (estilo pyLDAvis):
     cercanía = distancia entre temas (JS + MDS), tamaño = prevalencia.
@@ -252,7 +252,9 @@ def fig_lda_burbujas(resultado: dict) -> go.Figure:
     Retorna:
         go.Figure con las burbujas.
     """
-    temas = resultado['temas']
+    temas = (resultado or {}).get('temas') if resultado else None
+    if not temas:
+        return go.Figure()
     colores = px.colors.qualitative.Safe
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -563,6 +565,123 @@ def _flujo_imagen(buf, max_width: int = 520):
     return RLImage(buf, width=width, height=height)
 
 
+# --- Builders matplotlib de FALLBACK para el PDF ---------------------------------
+# Se usan cuando kaleido/`fig.to_image` falla (p.ej. en la nube), para que cada
+# sección del PDF SIEMPRE lleve una imagen equivalente a la gráfica del dashboard.
+
+def _fig_mpl_lineas(df):
+    """Fallback matplotlib de la evolución diaria de interacciones."""
+    if df is None or df.empty or 'fecha' not in df.columns:
+        return None
+    d = df[df['fecha'].notna()]
+    if d.empty:
+        return None
+    a = d.groupby(d['fecha'].dt.date).agg({
+        'likes': 'sum', 'comentarios': 'sum', 'compartidos': 'sum'}).sort_index()
+    if a.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(9, 4), dpi=110)
+    ax.plot(a.index, a['likes'], color='#ef4444', label='Likes', linewidth=1.8)
+    ax.plot(a.index, a['comentarios'], color='#3b82f6', label='Comentarios', linewidth=1.8)
+    ax.plot(a.index, a['compartidos'], color='#10b981', label='Compartidos', linewidth=1.8)
+    ax.set_ylabel('Interacciones')
+    ax.legend(fontsize=8)
+    ax.grid(True, linestyle='--', alpha=0.4)
+    fig.autofmt_xdate(rotation=30)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_mpl_pie(df):
+    """Fallback matplotlib del pastel de distribución por red social."""
+    if df is None or df.empty or 'red_social' not in df.columns:
+        return None
+    redes = df['red_social'].value_counts()
+    if redes.empty:
+        return None
+    colores = {'TikTok': '#ff0050', 'Facebook': '#1877f2',
+               'Instagram': '#c13584', 'X': '#1DA1F2'}
+    fig, ax = plt.subplots(figsize=(5.2, 3.6), dpi=110)
+    ax.pie(redes, labels=redes.index, autopct='%1.0f%%',
+           colors=[colores.get(r, '#64748b') for r in redes.index],
+           startangle=90, textprops={'fontsize': 8})
+    ax.set_aspect('equal')
+    fig.tight_layout()
+    return fig
+
+
+def _fig_mpl_barras(datos, y_col: str):
+    """Fallback matplotlib de la barra horizontal de alcance por tema."""
+    if datos is None or datos.empty or 'alcance' not in datos.columns:
+        return None
+    d = datos.sort_values('alcance', ascending=True)
+    fig, ax = plt.subplots(figsize=(9, max(3.2, 0.5 * len(d) + 1.2)), dpi=110)
+    ax.barh(d[y_col], d['alcance'], color='#3b82f6')
+    ax.set_xlabel('Alcance aprox. (vistas)')
+    ax.grid(True, axis='x', linestyle='--', alpha=0.4)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_mpl_barras_top(df):
+    """Fallback matplotlib del Top 15 de palabras más repetidas."""
+    frec = frecuencia_palabras(df, n=15)
+    if frec.empty:
+        return None
+    d = frec.sort_values('frecuencia')
+    fig, ax = plt.subplots(figsize=(9, max(3.4, 0.5 * len(d) + 1.4)), dpi=110)
+    ax.barh(d['palabra'], d['frecuencia'], color='#10b981')
+    ax.set_xlabel('Frecuencia')
+    ax.grid(True, axis='x', linestyle='--', alpha=0.4)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_mpl_area(df):
+    """Fallback matplotlib de la tendencia de sentimiento en el tiempo."""
+    if df is None or df.empty or 'fecha' not in df.columns or 'sentimiento' not in df.columns:
+        return None
+    d = df[df['fecha'].notna()]
+    if d.empty:
+        return None
+    pivot = d.groupby([d['fecha'].dt.date, 'sentimiento']).size() \
+        .unstack(fill_value=0).sort_index()
+    if pivot.empty:
+        return None
+    orden = [c for c in ('positivo', 'negativo', 'neutral') if c in pivot.columns]
+    colores = {'positivo': '#10b981', 'negativo': '#ef4444', 'neutral': '#f59e0b'}
+    fig, ax = plt.subplots(figsize=(9, 4), dpi=110)
+    ax.stackplot(pivot.index, [pivot[c] for c in orden],
+                 labels=orden, colors=[colores[c] for c in orden], alpha=0.85)
+    ax.set_ylabel('Cantidad')
+    ax.legend(loc='upper left', fontsize=8)
+    ax.grid(True, linestyle='--', alpha=0.4)
+    fig.autofmt_xdate(rotation=30)
+    fig.tight_layout()
+    return fig
+
+
+def _fig_mpl_lda(resultado):
+    """Fallback matplotlib del plano de burbujas de temáticas LDA."""
+    temas = (resultado or {}).get('temas') if resultado else None
+    if not temas:
+        return None
+    hex_colores = ['#a6cee3', '#1f78b4', '#b2df8a', '#33a02c', '#fb9a99',
+                   '#e31a1c', '#fdbf6f', '#ff7f00', '#cab2d6', '#6a3d9a']
+    fig, ax = plt.subplots(figsize=(8.5, 5), dpi=110)
+    for t in temas:
+        ax.scatter(t['x'], t['y'], s=900 + t['prevalencia'] * 8000, alpha=0.75,
+                   color=hex_colores[(t['id'] - 1) % len(hex_colores)],
+                   edgecolors='#0f172a', linewidths=0.8)
+        ax.annotate(f"Tema {t['id']}", (t['x'], t['y']),
+                    color='#0f172a', fontsize=9, ha='center', va='center')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel('Plano 2D (distancia JS + MDS)')
+    fig.tight_layout()
+    return fig
+
+
 def _df_para_cache(df: pd.DataFrame) -> pd.DataFrame:
     """
     Devuelve una copia del DataFrame con las columnas no-hasheables (listas,
@@ -583,9 +702,11 @@ def _df_para_cache(df: pd.DataFrame) -> pd.DataFrame:
 def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
                            k_lda: int = 0) -> bytes:
     """
-    Genera un PDF con las MISMAS gráficas del dashboard (Plotly → PNG vía
-    kaleido; nubes de matplotlib → PNG) más las tablas resumen (KPIs, temas
-    LDA y últimas publicaciones). Se cachea por contenido del DataFrame.
+    Genera un PDF que replica la disposición del dashboard de la Pestaña 2:
+    KPIs y todas las gráficas del dashboard (mismas figuras Plotly → PNG vía
+    kaleido) organizadas en filas de 2 tarjetas como la grilla del panel, más
+    las tablas resumen. Cada sección tiene fallback a matplotlib por si kaleido
+    no puede rasterizar, de modo que SIEMPRE se incrustan imágenes.
 
     Retorna:
         bytes del PDF listo para `st.download_button`.
@@ -602,36 +723,76 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
     from reportlab.lib.units import mm
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
-                                    Spacer)
+                                    Spacer, Table, TableStyle)
 
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=16 * mm,
-                            rightMargin=16 * mm, topMargin=14 * mm,
-                            bottomMargin=14 * mm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=15 * mm,
+                            rightMargin=15 * mm, topMargin=13 * mm,
+                            bottomMargin=13 * mm)
     estilos = getSampleStyleSheet()
     titulo = ParagraphStyle('Titulo', parent=estilos['Title'], fontSize=16,
                             textColor=colors.HexColor('#0f172a'), spaceAfter=4)
     h2 = ParagraphStyle('H2', parent=estilos['Heading2'], fontSize=12,
-                        spaceBefore=12, spaceAfter=4,
+                        spaceBefore=10, spaceAfter=4,
                         textColor=colors.HexColor('#059669'))
     cuerpo = ParagraphStyle('Cuerpo', parent=estilos['BodyText'], fontSize=9,
                             leading=12)
+    h3_card = ParagraphStyle('H3Card', parent=estilos['BodyText'],
+                             fontName='Helvetica-Bold', fontSize=10.5, leading=13,
+                             textColor=colors.HexColor('#0f172a'))
+    caption_card = ParagraphStyle('CapCard', parent=estilos['BodyText'],
+                                  fontSize=7.5, leading=9,
+                                  textColor=colors.HexColor('#64748b'))
+    ancho_col = 254
+
     historia = []
 
-    def _imagen(fig_plotly=None, fig_mpl=None, width=1100, height=360,
-                max_width=520):
-        """Añade la imagen (Plotly o matplotlib) a `historia`, si hay figura."""
+    def _imagen_flowable(fig_plotly=None, fig_mpl=None, width=1100, height=360,
+                         max_width=240):
+        """Convierte una sección a imagen: intenta Plotly (kaleido) y si falla
+        usa el fallback matplotlib. Retorna flowable Image o None."""
         flujo = None
         if fig_plotly is not None:
             flujo = _flujo_imagen(_png_plotly(fig_plotly, width=width, height=height),
                                   max_width=max_width)
-        elif fig_mpl is not None:
+        if flujo is None and fig_mpl is not None:
             flujo = _flujo_imagen(_png_matplotlib(fig_mpl), max_width=max_width)
-        if flujo is not None:
-            historia.append(Spacer(1, 4))
-            historia.append(flujo)
+        return flujo
 
-    historia.append(Paragraph('Dashboard de Redes Sociales — Tlalpan 2027', titulo))
+    def _tarjeta(titulo_txt, flujo=None, tabla=None, caption=None):
+        """Flujos de una tarjeta (encabezado + caption + imagen/tabla)."""
+        celdas = [Paragraph(titulo_txt, h3_card)]
+        if caption:
+            celdas.append(Paragraph(caption, caption_card))
+        if flujo is not None:
+            celdas.append(Spacer(1, 3))
+            celdas.append(flujo)
+        if tabla is not None:
+            celdas.append(Spacer(1, 3))
+            celdas.append(tabla)
+        return celdas
+
+    def _fila(izq, der):
+        """Dos tarjetas al lado (como la grilla del dashboard), si hay contenido."""
+        if (not izq) and (not der):
+            return
+        vacio = [Paragraph('', caption_card)]
+        fila = Table([[izq or vacio, der or vacio]], colWidths=[ancho_col, ancho_col])
+        fila.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+            ('BOX', (0, 0), (-1, -1), 0.8, colors.HexColor('#cbd5e1')),
+            ('INNERGRID', (0, 0), (-1, -1), 0.6, colors.HexColor('#dbe3ec')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ]))
+        historia.append(Spacer(1, 6))
+        historia.append(fila)
+
+    # --- Encabezado ---------------------------------------------------------
+    historia.append(Paragraph('Dashboard de Redes Sociales', titulo))
     historia.append(Paragraph(f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
                               cuerpo))
     if nota_filtros:
@@ -640,7 +801,7 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
     historia.append(HRFlowable(width='100%', thickness=1.2,
                                color=colors.HexColor('#059669')))
 
-    # --- KPIs y sentimiento ---
+    # --- KPIs y sentimiento -------------------------------------------------
     historia.append(Paragraph('KPIs y sentimiento', h2))
     resumen = resumen_sentimiento(df)
     if df.empty:
@@ -651,87 +812,117 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
         coment = int(df['comentarios'].sum()) if 'comentarios' in df.columns else 0
         compart = int(df['compartidos'].sum()) if 'compartidos' in df.columns else 0
         vistas_tot = int(df['vistas'].sum()) if 'vistas' in df.columns else 0
+    engagement = likes + coment + compart
     historia.append(_tabla_pdf([
         ['Métrica', 'Valor', 'Métrica', 'Valor'],
         ['Total posts', f'{total:,}', 'Likes', f'{likes:,}'],
         ['Comentarios', f'{coment:,}', 'Compartidos', f'{compart:,}'],
-        ['Alcance (vistas)', f'{vistas_tot:,}', 'Sentimiento promedio',
-         f"{resumen['promedio']:+.2f}"],
-        ['Positivos', str(resumen['positivos']), 'Negativos', str(resumen['negativos'])],
-    ], [90, 110, 110, 110]))
+        ['Engagement total', f'{engagement:,}', 'Alcance (vistas)', f'{vistas_tot:,}'],
+        ['Sentimiento promedio', f"{resumen['promedio']:+.2f}",
+         'Positivos / Negativos', f"{resumen['positivos']} / {resumen['negativos']}"],
+    ], [110, 95, 110, 95]))
 
-    # --- Distribución por red (gráfica del dashboard) ---
-    historia.append(Paragraph('Distribución por red social', h2))
-    _imagen(fig_plotly=fig_distribucion_redes(df), width=900, height=340)
-
-    # --- Evolución temporal ---
-    historia.append(Paragraph('Evolución de interacciones', h2))
-    _imagen(fig_plotly=fig_evolucion_temporal(df), width=1100, height=360)
-
-    # --- Temáticas LDA (mismas burbujas del dashboard) ---
+    # --- Contenido común (secciones reutilizables) --------------------------
     resultado_lda = None
     if k_lda:
         resultado_lda = analizar_lda(df, n_topics=int(k_lda))
-    if resultado_lda and resultado_lda.get('ok'):
-        historia.append(Paragraph('Temáticas LDA (burbujas 2D)', h2))
-        _imagen(fig_plotly=fig_lda_burbujas(resultado_lda), width=1100, height=420)
-        filas = [['Tema', 'Prevalencia', 'Palabras clave']]
-        for t in resultado_lda['temas']:
-            filas.append([f"Tema {t['id']}", f"{t['prevalencia'] * 100:.1f}%",
-                          ', '.join(t['palabras'])])
-        historia.append(_tabla_pdf(filas, [60, 70, 370]))
+    lda_ok = bool(resultado_lda and resultado_lda.get('ok'))
 
-    # --- Alcance por tema (LDA con fallback a categorías) ---
-    historia.append(Paragraph('Alcance estimado por tema (suma de vistas)', h2))
-    if resultado_lda and resultado_lda.get('ok'):
+    # Nube de temas
+    nube_flow = None
+    if not df.empty and 'texto' in df.columns:
+        nube_flow = _imagen_flowable(
+            fig_mpl=_fig_wordcloud(
+                ' '.join(df['texto'].fillna('').astype(str).tolist()),
+                max_words=80, color_func=color_por_sentimiento,
+                stopwords=STOPWORDS_ES))
+
+    # Menciones y hashtags
+    menciones = extraer_menciones(df)
+    menc_flow = None
+    if not menciones.empty:
+        menc_flow = _imagen_flowable(
+            fig_mpl=_fig_wordcloud(
+                frecuencias=dict(zip(menciones['usuario'].astype(str),
+                                     menciones['menciones'].astype(int))),
+                max_words=60, min_font_size=8))
+
+    hashtags = frecuencia_hashtags(df)
+    hash_flow = None
+    if not hashtags.empty:
+        hash_flow = _imagen_flowable(
+            fig_mpl=_fig_wordcloud(
+                frecuencias=dict(zip('#' + hashtags['hashtag'].astype(str),
+                                     hashtags['frecuencia'].astype(int))),
+                max_words=60, min_font_size=8))
+
+    # --- FILA 1: Evolución | Nube de temas ----------------------------------
+    _fila(
+        _tarjeta('Evolución de interacciones',
+                 flujo=_imagen_flowable(fig_evolucion_temporal(df),
+                                        _fig_mpl_lineas(df), height=380)),
+        _tarjeta('Nube de temas (por sentimiento)', flujo=nube_flow),
+    )
+
+    # --- FILA 2: Temáticas LDA | Distribución por red -----------------------
+    lda_tabla = None
+    lda_flujo = None
+    if lda_ok:
+        lda_tabla = _tabla_pdf(
+            [['Tema', 'Preval.', 'Palabras clave']] + [
+                [f"Tema {t['id']}", f"{t['prevalencia'] * 100:.1f}%",
+                 ', '.join(t['palabras'])] for t in resultado_lda['temas']],
+            [48, 52, 145])
+        lda_flujo = _imagen_flowable(fig_lda_burbujas(resultado_lda),
+                                     _fig_mpl_lda(resultado_lda), height=430)
+    _fila(
+        _tarjeta('Temáticas LDA (burbujas 2D)',
+                 flujo=lda_flujo, tabla=lda_tabla,
+                 caption=None if lda_ok else 'LDA no disponible con los datos actuales.'),
+        _tarjeta('Distribución por red social',
+                 flujo=_imagen_flowable(fig_distribucion_redes(df),
+                                        _fig_mpl_pie(df), width=900, height=340)),
+    )
+
+    # --- FILA 3: Alcance por tema | Top 15 palabras --------------------------
+    if lda_ok:
         agrupado_alcance = alcance_por_tema_lda(df, resultado_lda)
-        _imagen(fig_plotly=fig_barras_alcance(agrupado_alcance, 'tema_lda'),
-                width=1100, height=360)
+        if agrupado_alcance.empty:
+            agrupado_alcance = alcance_por_tema(df)
+            if not agrupado_alcance.empty:
+                agrupado_alcance['tema_lda'] = agrupado_alcance['tema_electoral']
+                agrupado_alcance['palabras'] = ''
     else:
         agrupado_alcance = alcance_por_tema(df)
         if not agrupado_alcance.empty:
             agrupado_alcance['tema_lda'] = agrupado_alcance['tema_electoral']
             agrupado_alcance['palabras'] = ''
-            _imagen(fig_plotly=fig_barras_alcance(agrupado_alcance, 'tema_lda'),
-                    width=1100, height=360)
+    alcance_flow = None
+    if not agrupado_alcance.empty:
+        alcance_flow = _imagen_flowable(fig_barras_alcance(agrupado_alcance, 'tema_lda'),
+                                        _fig_mpl_barras(agrupado_alcance, 'tema_lda'),
+                                        height=380)
+    _fila(
+        _tarjeta('Alcance estimado por tema (suma de vistas)', flujo=alcance_flow,
+                 caption=None if alcance_flow else 'No hay datos de alcance por tema.'),
+        _tarjeta('Top 15 palabras más repetidas',
+                 flujo=_imagen_flowable(fig_top_palabras(df),
+                                        _fig_mpl_barras_top(df), height=450)),
+    )
 
-    # --- Nube de temas ---
-    if not df.empty and 'texto' in df.columns:
-        historia.append(Paragraph('Nube de temas (por sentimiento)', h2))
-        _imagen(fig_mpl=_fig_wordcloud(
-            ' '.join(df['texto'].fillna('').astype(str).tolist()),
-            max_words=80, color_func=color_por_sentimiento,
-            stopwords=STOPWORDS_ES))
+    # --- FILA 4: Usuarios mencionados | Hashtags -----------------------------
+    _fila(
+        _tarjeta('Usuarios mencionados', flujo=menc_flow,
+                 caption=None if menc_flow else 'No hay @usuarios mencionados en los posts.'),
+        _tarjeta('Hashtags en los posts', flujo=hash_flow,
+                 caption=None if hash_flow else 'No hay hashtags en los posts.'),
+    )
 
-    # --- Top palabras ---
-    historia.append(Paragraph('Top 15 palabras más repetidas', h2))
-    _imagen(fig_plotly=fig_top_palabras(df), width=1100, height=440)
-
-    # --- Nube de menciones ---
-    menciones = extraer_menciones(df)
-    if not menciones.empty:
-        historia.append(Paragraph('Usuarios mencionados', h2))
-        _imagen(fig_mpl=_fig_wordcloud(
-            frecuencias=dict(zip(menciones['usuario'].astype(str),
-                                 menciones['menciones'].astype(int))),
-            max_words=60, min_font_size=8))
-
-    # --- Nube de hashtags ---
-    hashtags = frecuencia_hashtags(df)
-    if not hashtags.empty:
-        historia.append(Paragraph('Hashtags en los posts', h2))
-        _imagen(fig_mpl=_fig_wordcloud(
-            frecuencias=dict(zip('#' + hashtags['hashtag'].astype(str),
-                                 hashtags['frecuencia'].astype(int))),
-            max_words=60, min_font_size=8))
-
-    # --- Tendencia de sentimiento ---
-    historia.append(Paragraph('Tendencia de sentimiento en el tiempo', h2))
-    _imagen(fig_plotly=fig_sentimiento_temporal(df), width=1100, height=360)
-
-    # --- Últimas publicaciones (resumen tabular) ---
+    # --- FILA 5: Tendencia de sentimiento | Últimas publicaciones ------------
+    tend_flow = _imagen_flowable(fig_sentimiento_temporal(df), _fig_mpl_area(df),
+                                 height=380)
+    ult_tabla = None
     if not df.empty:
-        historia.append(Paragraph('Últimas publicaciones (resumen)', h2))
         df_ult = df.sort_values('fecha', ascending=False, na_position='last') \
             .head(10) if 'fecha' in df.columns else df.head(10)
         filas = [['Fecha', 'Red', 'Texto', 'Likes']]
@@ -742,10 +933,15 @@ def exportar_dashboard_pdf(df: pd.DataFrame, nota_filtros: str = '',
                     fecha = pd.Timestamp(r['fecha']).strftime('%Y-%m-%d %H:%M')
             except (TypeError, ValueError):
                 fecha = 'Sin fecha'
-            texto = str(r.get('texto', ''))[:60].replace('\n', ' ')
-            filas.append([fecha, str(r.get('red_social', '')), texto,
+            filas.append([fecha, str(r.get('red_social', '')),
+                          str(r.get('texto', ''))[:48].replace('\n', ' '),
                           f"{int(r.get('likes') or 0)}"])
-        historia.append(_tabla_pdf(filas, [95, 60, 270, 45]))
+        ult_tabla = _tabla_pdf(filas, [84, 40, 100, 24])
+    _fila(
+        _tarjeta('Tendencia de sentimiento en el tiempo', flujo=tend_flow,
+                 caption=None if tend_flow else 'No hay datos con fecha.'),
+        _tarjeta('Últimas publicaciones (resumen)', tabla=ult_tabla),
+    )
 
     doc.build(historia)
     buffer.seek(0)
