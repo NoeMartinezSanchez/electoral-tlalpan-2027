@@ -106,20 +106,24 @@ def _centroide_fallback(pm) -> tuple:
 
 def parsear_kml_secciones(ruta: str = RUTA_KML_TLALPAN) -> pd.DataFrame:
     """
-    Parsea un KML de secciones del Marco Geográfico Electoral (IECM) y extrae,
-    por sección: id, distritos, padrón/lista nominal, población INEGI 2010,
+    Parsea las secciones del Marco Geográfico Electoral (IECM) y extrae, por
+    sección: id, distritos, padrón/lista nominal, población INEGI 2010,
     centroide (lat, lon), área y geometría simplificada (GeoJSON).
+
+    Se prefiere el CSV de referencia COMMITEADO (`referencia/marcos/*.csv`)
+    para que funcione en Cloud sin `documentos/`; el KML solo se parsea si el
+    CSV no está disponible.
 
     Retorna:
         pd.DataFrame con las columnas de `COLUMNAS_INE` (vacío si no hay archivo).
     """
-    if not os.path.exists(ruta):
-        print(f'ADVERTENCIA: no existe el KML del marco electoral: {ruta}')
-        return pd.DataFrame()
-    # Preferir el CSV de referencia COMMITEADO (funciona en Cloud sin documentos/)
+    # Preferir el CSV de referencia COMMITEADO (funciona en Cloud sin documentos/).
     df_ref = _leer_csv_referencia(RUTA_REF_SECCIONES, 'secciones')
     if not df_ref.empty:
         return df_ref
+    if not os.path.exists(ruta):
+        print(f'ADVERTENCIA: no existe el KML del marco electoral: {ruta}')
+        return pd.DataFrame()
     try:
         tree = ET.parse(ruta)
         root = tree.getroot()
