@@ -5,6 +5,7 @@ import math
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from typing import Optional
@@ -33,6 +34,9 @@ ENDPOINT_RESULTADO_V2 = f'{BASE_URL}/api/v2/scraper/result/'
 # lo que Grok considera relevante). No hay un actor dedicado "scraper.x".
 ACTOR_GROK = 'scraper.grok'
 X_SEARCH_PROMPT_TEMPLATE = 'What has @{usuario} posted on X recently?'
+# Para el ámbito "palabra clave": Grok cita posts recientes de X que mencionan
+# la keyword (muestreo de lo que el modelo considera relevante, no feed completo).
+X_SEARCH_PROMPT_KEYWORD_TEMPLATE = 'What has been posted on X recently about "{keyword}"?'
 X_PAIS_DEFAULT = 'MX'
 X_MODE_DEFAULT = 'MODEL_MODE_FAST'   # también válidos: AUTO y EXPERT
 COSTO_GROK = 0.15                    # costo estimado por prompt de Grok (USD)
@@ -65,9 +69,8 @@ TIMEOUT_NAVEGAR = 20        # timeout para sembrar cookies (goto a instagram.com
 TIMEOUT_EVALUAR = 15        # timeout para el fetch a la API interna
 
 # Actores de la Scraping API por red social (confirmados en el apidoc público).
-# 'busqueda' (palabra clave) de TikTok fue deprecado por Scrapeless. TikTok usa
-# actores de la Scraping API; Instagram usa el Scraping Browser (CDP) + la API
-# interna web_profile_info (ver extraer_perfil_instagram), no un actor.
+# TikTok usa actores de la Scraping API; Instagram usa el Scraping Browser (CDP)
+# + la API interna web_profile_info (ver extraer_perfil_instagram), no un actor.
 ACTORES = {
     'TikTok': {
         'perfil': 'scraper.tiktok.user.detail',
@@ -79,10 +82,18 @@ ACTORES = {
     'Instagram': {},  # Instagram se extrae vía Scraping Browser, NO como actor
 }
 
+# Actor oficial de búsqueda por palabra clave de TikTok. Scrapeless lo marcó como
+# deprecado; se intenta igualmente y, si ya no existe o no devuelve resultados, se
+# cae al Scraping Browser (HTML de tiktok.com/search) como fallback anónimo.
+ACTOR_TIKTOK_BUSQUEDA = 'scraper.tiktok.search'
+URL_TIKTOK_BASE = 'https://www.tiktok.com'
+TIMEOUT_TIKTOK_NAVEGAR = 25
+TIMEOUT_TIKTOK_EVALUAR = 20
+
 # Mensajes para los flujos que Scrapeless ya no ofrece
 MENSAJE_KEYWORD_NO_SOPORTADA = (
-    'La búsqueda por palabra clave/hashtag de TikTok ya no está soportada '
-    'por Scrapeless (actor deprecado). Usa el ámbito "Perfil definido" con un @usuario.'
+    'La búsqueda por palabra clave para esta red no está soportada en la sesión '
+    'anónima actual. Usa el ámbito "Perfil definido" con un @usuario.'
 )
 MENSAJE_INSTAGRAM_KEYWORD_NO_SOPORTADA = (
     'La búsqueda por palabra clave en Instagram requiere login y no está '
@@ -259,16 +270,226 @@ def ejecutar_actor(actor: str, input_dict: dict, api_key: str,
 
 # --- Búsqueda por palabra clave / hashtag -----------------------------------
 
-def buscar_posts_tiktok(keyword: str, limite: int = 35, api_key: Optional[str] = None):
+def _item_tiktok_buscador(video: dict) -> dict:
     """
-    Búsqueda por palabra clave/hashtag de TikTok (fase 1 original).
-    Scrapeless depreco el actor de búsqueda, por lo que este flujo ya no es
-    posible por la API; se conserva únicamente como máscara informativa.
+    Normaliza una tarjeta de vídeo extraída de la búsqueda de TikTok (actor o
+    JSON del HTML) al esquema de item que entiende `normalizar_posts('TikTok')`.
+
+    Los nodos de `ItemModule`/`items` de TikTok ya usan las llaves camelCase
+    de `stats` (playCount/diggCount/...); este mapeador solo garantiza que el
+    esquema sea estable ante variaciones y convierte `createTime` (ms) a `create_time`
+    (segundos) para que `_extraer_fecha` no lo malinterprete.
 
     Retorna:
-        tuple (items, error): lista vacía y el mensaje de no soportado.
+        dict con 'id'/'post_id', 'desc', 'create_time', 'author' y 'stats'.
     """
-    return [], {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
+    video = video or {}
+    autor = video.get('author') or {}
+    id_video = video.get('id') or video.get('aweme_id') or video.get('post_id')
+    create_time = video.get('createTime') or video.get('create_time')
+    if isinstance(create_time, (int, float)) and create_time > 1e12:
+        create_time = int(create_time / 1000)
+    return {
+        'id': id_video,
+        'post_id': id_video,
+        'desc': video.get('desc') or video.get('description') or '',
+        'create_time': create_time,
+        'author': {
+            'uniqueId': autor.get('uniqueId') or '',
+            'nickname': autor.get('nickname') or '',
+        },
+        'stats': video.get('stats') or {},
+    }
+
+
+# JavaScript inyectado en la sesión CDP: espera el JSON embebido de la página de
+# búsqueda de TikTok y extrae las tarjetas de vídeo (ItemModule de SIGI_STATE,
+# que es el discriminador estable; __UNIVERSAL_DATA_FOR_REHYDRATION__ como auxiliar).
+_JS_TIKTOK_BUQUEDA = r"""
+async (arg) => {
+  const t0 = Date.now();
+  let sigi = null;
+  let universal = null;
+  while (Date.now() - t0 < 15000) {
+    const s = document.querySelector('#SIGI_STATE');
+    if (s && s.textContent && !sigi) {
+      try { sigi = JSON.parse(s.textContent); } catch (e) { sigi = null; }
+    }
+    const u = document.querySelector('#__UNIVERSAL_DATA_FOR_REHYDRATION__');
+    if (u && u.textContent && !universal) {
+      try { universal = JSON.parse(u.textContent); } catch (e) { universal = null; }
+    }
+    if (sigi || universal) break;
+    await new Promise(r => setTimeout(r, 600));
+  }
+  if (!sigi && !universal) {
+    return { ok: false, error: 'sin JSON embebido (posible login-wall)' };
+  }
+  const items = [];
+  const modulo = (sigi || {}).ItemModule || {};
+  for (const k in modulo) {
+    const v = modulo[k];
+    if (v && typeof v === 'object' && (v.id || v.desc || v.stats)) items.push(v);
+  }
+  if (!items.length && universal && universal.__DEFAULT_SCOPE__) {
+    // Auxiliar: recorrer el árbol buscando nodos con desc + stats.
+    const buscar = (o) => {
+      if (!o || typeof o !== 'object') return;
+      if (Array.isArray(o)) { o.forEach(buscar); return; }
+      if (o.desc && o.stats && (o.id || o.awemeId)) { items.push(o); }
+      for (const key in o) buscar(o[key]);
+    };
+    buscar(universal);
+  }
+  return { ok: true, url: location.href, items: items };
+}
+"""
+
+
+async def _intento_busqueda_tt_browser(keyword: str, limite: int, api_key: str,
+                                      pais: str = PROXY_COUNTRY) -> dict:
+    """
+    Un solo intento de sesión CDP para la búsqueda de TikTok por palabra clave:
+    abre `tiktok.com/search?q=...` (o `/tag/...` para hashtags) y lee el JSON
+    embebido (SIGI_STATE). Cierra SIEMPRE la sesión en `finally`.
+
+    Retorna:
+        dict con 'success', 'posts' (items normalizables) y 'error'.
+    """
+    from playwright.async_api import async_playwright
+
+    es_hashtag = keyword.strip().startswith('#')
+    termino = keyword.strip().lstrip('#')
+    if es_hashtag:
+        url = f'{URL_TIKTOK_BASE}/tag/{urllib.parse.quote(termino)}'
+    else:
+        url = f'{URL_TIKTOK_BASE}/search?q={urllib.parse.quote(termino)}'
+
+    browser = None
+    aurora = None
+    try:
+        aurora = await async_playwright().start()
+        browser = await aurora.chromium.connect_over_cdp(_url_browser(api_key, pais))
+        contextos = browser.contexts
+        if contextos:
+            contexto = contextos[0]
+            pagina = contexto.pages[0] if contexto.pages else await contexto.new_page()
+        else:
+            contexto = await browser.new_context()
+            pagina = await contexto.new_page()
+
+        try:
+            await asyncio.wait_for(pagina.goto(url, wait_until='domcontentloaded'),
+                                   TIMEOUT_TIKTOK_NAVEGAR)
+            await pagina.wait_for_timeout(4000)
+        except Exception as e:
+            return {'success': False, 'posts': [],
+                    'error': f'No se pudo cargar la búsqueda de TikTok: {e}'}
+
+        try:
+            resultado = await asyncio.wait_for(
+                pagina.evaluate(_JS_TIKTOK_BUQUEDA), TIMEOUT_TIKTOK_EVALUAR)
+        except asyncio.TimeoutError:
+            return {'success': False, 'posts': [],
+                    'error': 'Tiempo de espera agotado leyendo la búsqueda'}
+        except Exception as e:
+            return {'success': False, 'posts': [],
+                    'error': f'Error al leer la página: {e}'}
+
+        if not isinstance(resultado, dict) or not resultado.get('ok'):
+            return {'success': False, 'posts': [],
+                    'error': (resultado or {}).get('error')
+                             or 'Página sin resultados de búsqueda (posible login-wall)'}
+        videos = resultado.get('items') or []
+        if not videos:
+            return {'success': False, 'posts': [],
+                    'error': 'Página sin resultados de búsqueda (posible bloqueo/login)'}
+        posts = [_item_tiktok_buscador(v) for v in videos][:int(limite)]
+        return {'success': True, 'posts': posts, 'error': None}
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if aurora:
+            try:
+                await aurora.stop()
+            except Exception:
+                pass
+
+
+def _buscar_posts_tiktok_browser(keyword: str, limite: int,
+                                 api_key: str) -> tuple:
+    """
+    Ejecuta el fallback del Scraping Browser para la búsqueda de TikTok.
+
+    Retorna:
+        tuple (items, error).
+    """
+    try:
+        resultado = asyncio.run(_intento_busqueda_tt_browser(
+            keyword, int(limite), api_key))
+    except Exception as e:
+        print(f'SCRAPELESS: TikTok búsqueda (browser) inesperado: {e}')
+        return [], {'error': f'Error inesperado en el Scraping Browser: {e}'}
+    if not resultado.get('success'):
+        return [], {'error': resultado.get('error', 'Falló la búsqueda vía Scraping Browser')}
+    return resultado.get('posts') or [], None
+
+
+def buscar_posts_tiktok(keyword: str, limite: int = 35,
+                        api_key: Optional[str] = None):
+    """
+    Búsqueda por palabra clave/hashtag de TikTok. Estrategia en dos pasos:
+    1. Actor `scraper.tiktok.search` de la Scraping API (pagina con has_more/cursor).
+    2. Si el actor ya no existe o no entrega resultados, fallback al Scraping
+       Browser: carga `tiktok.com/search?q=...` (o `/tag/...`) y parsea el JSON
+       embebido (SIGI_STATE). Sin login, pero sujeto a posibles login-walls.
+
+    Retorna:
+        tuple (items, error): items crudos normalizables y error (None si OK).
+    """
+    api_key = api_key or obtener_api_key()
+    if not api_key:
+        return [], {'error': 'No hay API Key configurada'}
+    consulta = str(keyword).strip()
+    if not consulta:
+        return [], {'error': 'Palabra clave vacía'}
+
+    termino = consulta.lstrip('#')
+    items = []
+    cursor = '0'
+    restante = min(int(limite), 200)
+    error_actor = None
+    while restante > 0:
+        cantidad = min(RESULTADOS_POR_LLAMADA, restante)
+        resultado = ejecutar_actor(ACTOR_TIKTOK_BUSQUEDA, {
+            'keyword': termino,
+            'cursor': cursor,
+            'count': cantidad,
+        }, api_key)
+        if 'error' in resultado:
+            error_actor = resultado['error']
+            break
+        pagina = resultado.get('items') or resultado.get('data') or []
+        if not pagina:
+            break
+        items.extend(pagina)
+        restante -= len(pagina)
+        if resultado.get('has_more') is not True or not resultado.get('cursor'):
+            break
+        cursor = str(resultado['cursor'])
+
+    if items:
+        print(f'SCRAPELESS: TikTok búsqueda "{consulta}" -> {len(items[:int(limite)])} '
+              f'posts (actor).')
+        return items[:int(limite)], None
+
+    # El actor no entregó datos (deprecado o sin coincidencias): fallback browser.
+    print(f'SCRAPELESS: TikTok búsqueda "{consulta}" sin resultados en el actor '
+          f'({error_actor}); fallback al Scraping Browser...')
+    return _buscar_posts_tiktok_browser(consulta, limite, api_key)
 
 
 def buscar_posts_perfil_tiktok(usuario: str, limite: int = 35, api_key: Optional[str] = None):
@@ -819,15 +1040,19 @@ def normalizar_posts_x(posts_crudos: list, usuario: str) -> list:
     return [i for i in items if i['caption'] or i['post_id']]
 
 
-def extraer_posts_x(usuario: str, limite: int = 20,
+def extraer_posts_x(usuario: str = '', limite: int = 20,
                     api_key: Optional[str] = None,
-                    pais: str = X_PAIS_DEFAULT) -> dict:
+                    pais: str = X_PAIS_DEFAULT,
+                    keyword: Optional[str] = None) -> dict:
     """
-    Extrae posts recientes de un usuario de X (Twitter) usando el actor AI
-    `scraper.grok`. Grok responde al prompt "What has @<usuario> posted on X
-    recently?" y cita los posts que considera relevantes en `x_search_results`
-    (muestreo, no feed completo). Reutiliza la API Key de Scrapeless.
-    Nota: like_count/comment_count no están disponibles en esta API (0).
+    Extrae posts recientes de X (Twitter) usando el actor AI `scraper.grok`.
+    Grok responde a un prompt y cita los posts que considera relevantes en
+    `x_search_results` (muestreo, no feed completo). Reutiliza la API Key de
+    Scrapeless. Nota: like_count/comment_count no están disponibles (0).
+
+    Si se pasa `keyword`, el prompt cambia a "What has been posted on X
+    recently about '<keyword>'?" y no se necesita @usuario (búsqueda por
+    palabra clave). Igual que en perfil: solo lo que Grok cita.
 
     Retorna:
         dict con 'success' (bool), 'posts' (items ya normalizables) y 'error'.
@@ -835,11 +1060,22 @@ def extraer_posts_x(usuario: str, limite: int = 20,
     api_key = api_key or obtener_api_key()
     if not api_key:
         return {'success': False, 'posts': [], 'error': 'No hay API Key configurada'}
-    usuario = str(usuario).strip().lstrip('@')
-    if not usuario:
-        return {'success': False, 'posts': [], 'error': 'Usuario de X vacío'}
-    prompt = X_SEARCH_PROMPT_TEMPLATE.format(usuario=usuario)
-    print(f'SCRAPELESS: X @{usuario} - prompt: {prompt}')
+
+    if keyword:
+        termino = str(keyword).strip()
+        if not termino:
+            return {'success': False, 'posts': [], 'error': 'Palabra clave vacía'}
+        prompt = X_SEARCH_PROMPT_KEYWORD_TEMPLATE.format(keyword=termino.lstrip('#'))
+        etiqueta = termino
+        print(f'SCRAPELESS: X búsqueda "{termino}" - prompt: {prompt}')
+    else:
+        usuario = str(usuario).strip().lstrip('@')
+        if not usuario:
+            return {'success': False, 'posts': [], 'error': 'Usuario de X vacío'}
+        prompt = X_SEARCH_PROMPT_TEMPLATE.format(usuario=usuario)
+        etiqueta = usuario
+        print(f'SCRAPELESS: X @{usuario} - prompt: {prompt}')
+
     resultado = ejecutar_grok(
         {'prompt': prompt, 'country': pais, 'mode': X_MODE_DEFAULT}, api_key)
     if 'error' in resultado:
@@ -848,12 +1084,13 @@ def extraer_posts_x(usuario: str, limite: int = 20,
     posts_crudos = task.get('x_search_results') or []
     if not posts_crudos:
         return {'success': False, 'posts': [],
-                'error': f"No se encontraron posts de '{usuario}' en las citas de Grok"}
-    items = normalizar_posts_x(posts_crudos, usuario)[:int(limite)]
-    print(f'SCRAPELESS: X @{usuario} -> {len(items)} posts (de {len(posts_crudos)} crudos).')
+                'error': f"No se encontraron posts de '{etiqueta}' en las citas de Grok"}
+    items = normalizar_posts_x(posts_crudos, etiqueta)[:int(limite)]
+    print(f'SCRAPELESS: X "{etiqueta}" -> {len(items)} posts '
+          f'(de {len(posts_crudos)} crudos).')
     if not items:
         return {'success': False, 'posts': [],
-                'error': f"No se encontraron posts de '{usuario}' en las citas de Grok"}
+                'error': f"No se encontraron posts de '{etiqueta}' en las citas de Grok"}
     return {'success': True, 'posts': items, 'error': None}
 
 
@@ -1230,10 +1467,12 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
     """
     Ejecuta un plan de extracción real. Flujos soportados:
     - TikTok perfil (`scraper.tiktok.user.detail` + `scraper.tiktok.user.work`).
+    - TikTok palabra clave (actor `scraper.tiktok.search` + fallback Scraping
+      Browser a `tiktok.com/search`).
     - Instagram perfil (Scraping Browser / CDP + API interna `web_profile_info`).
-    - X/Twitter perfil (actor AI `scraper.grok`).
+    - X/Twitter perfil y palabra clave (actor AI `scraper.grok`).
     - Facebook perfil (Scraping Browser + JSON de hidratación de Relay `User`/`Story`).
-    La búsqueda por palabra clave queda fuera (deprecada o sin soporte anónimo).
+    La búsqueda por palabra clave de Instagram/Facebook no está soportada.
 
     Retorna:
         dict con 'df' (DataFrame normalizado), 'posts_obtenidos', 'errores',
@@ -1255,8 +1494,8 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
         if red == 'TikTok' and ambito == 'perfil':
             items, error = buscar_posts_perfil_tiktok(objetivo, limite, api_key=api_key)
         elif red == 'TikTok':
-            error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
-            items = []
+            # Palabra clave/hashtag: actor `scraper.tiktok.search` + fallback browser.
+            items, error = buscar_posts_tiktok(objetivo, limite, api_key=api_key)
         elif red == 'Instagram' and ambito == 'perfil':
             res_ig = extraer_perfil_instagram(objetivo, limite, api_key=api_key)
             items = res_ig.get('posts') or []
@@ -1270,8 +1509,10 @@ def ejecutar_plan(plan: list, api_key: Optional[str] = None) -> dict:
             items = res_x.get('posts') or []
             error = res_x.get('error')
         elif red in ('X', 'Twitter'):
-            error = {'error': MENSAJE_KEYWORD_NO_SOPORTADA}
-            items = []
+            # Palabra clave/hashtag: Grok cita posts recientes sobre el término.
+            res_x = extraer_posts_x('', limite, api_key=api_key, keyword=objetivo)
+            items = res_x.get('posts') or []
+            error = res_x.get('error')
         elif red == 'Facebook' and ambito == 'perfil':
             res_fb = extraer_posts_facebook(objetivo, limite, api_key=api_key)
             items = res_fb.get('posts') or []
@@ -1309,9 +1550,12 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
     """
     Estima el número de peticiones y el costo aproximado en USD de un plan,
     comparándolo contra el saldo disponible.
-    - TikTok: cuenta peticiones a la Scraping API (actor por el perfil + páginas).
+    - TikTok: cuenta peticiones a la Scraping API (actor por el perfil + páginas,
+      o búsqueda por keyword paginada sin resolver perfil).
     - Instagram: cuenta una única sesión de Scraping Browser (navegación + fetch).
-    - X: cuenta un único prompt al actor AI scraper.grok.
+    - X: cuenta un único prompt al actor AI scraper.grok (perfil o keyword).
+    Nota: si la búsqueda de TikTok cae al fallback del Scraping Browser, se suma
+    una sesión CDP extra (≈ COSTO_SESION_BROWSER) no presupuestada aquí.
 
     Retorna:
         dict con 'peticiones', 'costo_usd', 'balance' y 'alcanza'.
@@ -1326,8 +1570,9 @@ def estimar_costo(plan: list, balance: Optional[float] = None) -> dict:
             peticiones += 1
             costo += COSTO_SESION_BROWSER
             continue
-        if config.get('red') in ('X', 'Twitter') and config.get('ambito') == 'perfil':
-            # Un prompt de Grok (la respuesta cita los posts detectados).
+        if config.get('red') in ('X', 'Twitter'):
+            # Un prompt de Grok, tanto en perfil como en búsqueda por palabra
+            # clave (la respuesta cita los posts detectados).
             peticiones += 1
             costo += COSTO_GROK
             continue

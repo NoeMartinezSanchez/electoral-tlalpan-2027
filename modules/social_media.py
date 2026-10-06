@@ -1082,6 +1082,20 @@ def mostrar_dashboard_redes_sociales():
                "X/Twitter (actor AI scraper.grok) y Facebook/Instagram (carga manual de "
                "CSV con Instant Data Scraper)")
 
+    # Indicador del tipo de extracción que se realizará (parte superior de la pestaña).
+    ambito_indicador = st.session_state.get('ambito_extraccion', 'perfil')
+    if ambito_indicador == 'keyword':
+        st.markdown('<span style="background:#7c3aed;color:#fff;padding:4px 12px;'
+                    'border-radius:9999px;font-size:12px;font-weight:600;">🔑 Modo de '
+                    'extracción: Palabra clave / hashtag (TikTok y/o X)</span>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown('<span style="background:#059669;color:#fff;padding:4px 12px;'
+                    'border-radius:9999px;font-size:12px;font-weight:600;">👤 Modo de '
+                    'extracción: Perfiles @cuenta (TikTok y/o X)</span>',
+                    unsafe_allow_html=True)
+    st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+
     # 0.0 Badge de carga manual si hay posts de Facebook/Instagram o si el origen
     # fue la carga manual de CSVs
     df_session = st.session_state.get('posts_sociales')
@@ -1140,8 +1154,9 @@ def mostrar_dashboard_redes_sociales():
     # 3. Controles secundarios: Rango de fechas y Exportación CSV
     df_actual = st.session_state.posts_sociales.copy()
     if df_actual.empty:
-        st.info("📭 Aún no hay datos. Ejecuta una extracción real con un @usuario de TikTok "
-                "o de X, o sube los CSVs de Facebook/Instagram en el panel de carga.")
+        st.info("📭 Aún no hay datos. Ejecuta una extracción real de TikTok o X (modo "
+                "Perfil o Palabra clave), o sube los CSVs de Facebook/Instagram "
+                "en el panel de carga.")
         return
     # Fechas válidas (los posts manuales de Facebook no tienen fecha -> NaT)
     rango_fechas = None
